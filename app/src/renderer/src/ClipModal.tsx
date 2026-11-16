@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
-import { Captions, Clapperboard, FolderOpen, Loader2, ScanFace, Trash2, Type, X } from 'lucide-react'
+import { Captions, Check, Clapperboard, Copy, FolderOpen, Loader2, Pencil, ScanFace, Trash2, Type, X } from 'lucide-react'
 import { LAYOUTS } from '../../shared/clips'
 import { formatTimecode } from '../../shared/vod'
-import type { ClipDraft, ClipLayout, ClipOptions, ClipRecord, Rect } from '../../shared/types'
+import type { ClipDraft, ClipLayout, ClipOptions, ClipRecord, MomentRecord, Rect } from '../../shared/types'
 import { Badge, Button, Segmented, Toggle, cx } from './ui'
 
 const clean = (e: unknown) => ((e as Error).message ?? String(e)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
@@ -147,7 +147,7 @@ function Nudge({ label, value, onChange, min, max }: { label: string; value: num
 }
 
 /** Janela "Gerar clipe": layout, facecam, trecho, legenda, título e qualidade, com prévia de um quadro. */
-export function ClipModal({ momentId, onClose }: { momentId: number; onClose: () => void }) {
+export function ClipModal({ momentId, onClose, onQueued }: { momentId: number; onClose: () => void; onQueued?: () => void }) {
   const [draft, setDraft] = useState<ClipDraft | null>(null)
   const [o, setO] = useState<ClipOptions | null>(null)
   const [facecam, setFacecam] = useState<Rect | null>(null)
@@ -202,7 +202,8 @@ export function ClipModal({ momentId, onClose }: { momentId: number; onClose: ()
     setSending(true)
     try {
       await window.api.renderClip(momentId, o)
-      onClose()
+      if (onQueued) onQueued()
+      else onClose()
     } catch (e) {
       setError(clean(e))
       setSending(false)
@@ -374,7 +375,7 @@ export function ClipModal({ momentId, onClose }: { momentId: number; onClose: ()
 
         <div className="flex items-center justify-between gap-3 border-t border-line/70 px-5 py-3">
           <p className={cx('min-w-0 truncate text-sm', error ? 'text-err' : 'text-muted')} title={error}>
-            {error || (needsCam ? 'Sem facecam marcada: este clipe sai em tela inteira.' : 'O clipe vai para a fila e aparece no cartão do momento.')}
+            {error || (needsCam ? 'Sem facecam marcada: este clipe sai em tela inteira.' : 'O clipe vai para a fila e aparece em Para revisar.')}
           </p>
           <div className="flex shrink-0 gap-2">
             <Button variant="ghost" onClick={onClose}>
@@ -390,30 +391,144 @@ export function ClipModal({ momentId, onClose }: { momentId: number; onClose: ()
   )
 }
 
-/** Player do clipe pronto, com atalhos para a pasta e o texto de postagem. */
-export function ClipPlayer({ clip, onClose }: { clip: ClipRecord; onClose: () => void }) {
-  const vertical = (clip.height ?? 16) > (clip.width ?? 9)
+/**
+ * Estúdio do clipe: o vídeo grande, a decisão (aprovar ou descartar) e o texto pronto para postar.
+ * "Editar" reabre a janela de gerar com as mesmas escolhas.
+ */
+export function ClipStudio({ clip, moment, onClose, onEdit }: { clip: ClipRecord; moment: MomentRecord | null; onClose: () => void; onEdit: () => void }) {
+  const [copied, setCopied] = useState(false)
+  const vertical = (clip.height ?? 16) >= (clip.width ?? 9)
+  const ready = clip.status === 'ready' && !!clip.path
+  const tags = clip.hashtags.map((h) => `#${h.replace(/^#/, '').replace(/\s+/g, '')}`).join(' ')
+  const review = (r: ClipRecord['review'], close = false) => void window.api.reviewClip(clip.id, r).then(() => close && onClose())
+  const copy = async () => {
+    const text = [clip.title, tags].filter(Boolean).join('\n\n')
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const t = document.createElement('textarea')
+      t.value = text
+      document.body.appendChild(t)
+      t.select()
+      document.execCommand('copy')
+      t.remove()
+    }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
   return (
     <Overlay onClose={onClose}>
-      <div className="flex max-h-full flex-col items-center gap-3">
-        <video
-          src={`clipador://clipe/${clip.id}`}
-          controls
-          autoPlay
-          className={cx('rounded-xl bg-black shadow-2xl', vertical ? 'h-[min(78vh,860px)]' : 'w-[min(80vw,1100px)]')}
-        />
-        <div className="flex max-w-xl flex-col items-center gap-2 text-center">
-          <p className="font-semibold">{clip.title}</p>
-          {clip.hashtags.length > 0 && <p className="text-xs text-muted">{clip.hashtags.map((h) => `#${h.replace(/^#/, '')}`).join(' ')}</p>}
-          <div className="flex gap-2">
-            {clip.path && (
-              <Button variant="ghost" onClick={() => void window.api.showInFolder(clip.path!)}>
-                <FolderOpen size={14} /> Mostrar na pasta
-              </Button>
+      <div className="flex max-h-full w-full max-w-4xl overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl">
+        <div className={cx('flex shrink-0 items-center justify-center bg-black', vertical ? 'w-auto' : 'flex-1')}>
+          {ready ? (
+            <video
+              src={`clipador://clipe/${clip.id}`}
+              controls
+              autoPlay
+              className={vertical ? 'h-[min(80vh,820px)]' : 'w-full'}
+            />
+          ) : (
+            <div className="grid aspect-[9/16] h-[min(80vh,820px)] place-items-center text-sm text-muted">
+              {clip.status === 'failed' ? `Falhou: ${clip.error ?? ''}` : 'Gerando o clipe…'}
+            </div>
+          )}
+        </div>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-start justify-between gap-2 border-b border-line/60 p-4">
+            <div className="min-w-0">
+              <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                {clip.score != null && <Badge tone="accent">nota {clip.score}</Badge>}
+                {clip.tag && <Badge tone="muted">{clip.tag}</Badge>}
+                {clip.auto && <Badge tone="muted">automático</Badge>}
+              </div>
+              <p className="text-lg font-semibold leading-snug">{clip.title}</p>
+              {clip.titleEn && <p className="text-sm text-muted">{clip.titleEn}</p>}
+            </div>
+            <button type="button" onClick={onClose} className="rounded-lg p-1 text-muted hover:text-text" aria-label="Fechar">
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 text-sm">
+            {tags && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted">Hashtags</p>
+                <p className="text-accent-2">{tags}</p>
+              </div>
             )}
-            <Button variant="ghost" onClick={onClose}>
-              Fechar
+            <Button variant="ghost" onClick={() => void copy()}>
+              <Copy size={14} /> {copied ? 'Copiado!' : 'Copiar título e hashtags'}
             </Button>
+            {moment && moment.reasons.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted">Por que virou clipe</p>
+                <ul className="space-y-0.5 text-xs text-text/85">
+                  {moment.reasons.slice(0, 4).map((r) => (
+                    <li key={r}>• {r}</li>
+                  ))}
+                  {moment.ai?.reason && <li className="text-accent-2">• IA: {moment.ai.reason}</li>}
+                </ul>
+              </div>
+            )}
+            {ready && (
+              <p className="text-xs text-muted">
+                {clip.width}×{clip.height} · {Math.round(clip.durationS)} s · {clip.sizeBytes ? `${(clip.sizeBytes / 1024 ** 2).toFixed(1)} MB` : ''} · o arquivo .txt ao lado tem títulos,
+                hashtags e créditos
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2 border-t border-line/60 p-4">
+            {clip.review === 'pending' ? (
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={!ready}
+                  onClick={() => review('approved', true)}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-ok/90 py-2.5 text-sm font-semibold text-black transition hover:bg-ok disabled:opacity-40"
+                >
+                  <Check size={16} /> Aprovar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => review('rejected', true)}
+                  className="flex items-center justify-center gap-2 rounded-xl border border-line px-4 py-2.5 text-sm text-muted transition hover:border-err/60 hover:text-err"
+                >
+                  <X size={16} /> Descartar
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 rounded-xl bg-card/60 px-3 py-2 text-sm">
+                {clip.review === 'approved' ? <Check size={16} className="text-ok" /> : <X size={16} className="text-err" />}
+                <span className="flex-1">{clip.review === 'approved' ? 'Aprovado' : 'Descartado'}</span>
+                <button type="button" onClick={() => review('pending')} className="text-xs text-muted hover:text-text">
+                  Voltar para revisão
+                </button>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {clip.momentId != null && (
+                <Button variant="ghost" onClick={onEdit}>
+                  <Pencil size={14} /> Editar
+                </Button>
+              )}
+              {clip.path && (
+                <Button variant="ghost" onClick={() => void window.api.showInFolder(clip.path!)}>
+                  <FolderOpen size={14} /> Pasta
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                title="Apagar o clipe do disco"
+                onClick={() => {
+                  if (confirm('Apagar este clipe do disco?')) void window.api.deleteClip(clip.id).then(onClose)
+                }}
+              >
+                <Trash2 size={14} />
+              </Button>
+            </div>
           </div>
         </div>
       </div>

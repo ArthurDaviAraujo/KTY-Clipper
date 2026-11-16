@@ -59,6 +59,8 @@ const api: Api = {
   renderClip: (momentId, options) => ipcRenderer.invoke('clips:render', momentId, options),
   listClips: (liveId) => ipcRenderer.invoke('clips:list', liveId),
   deleteClip: (id) => ipcRenderer.invoke('clips:delete', id),
+  reviewClip: (id, review) => ipcRenderer.invoke('clips:review', id, review),
+  dismissMoment: (id) => ipcRenderer.invoke('moments:dismiss', id),
   showInFolder: (p) => ipcRenderer.invoke('shell:showInFolder', p),
   onClips: subscribe('clips')
 }

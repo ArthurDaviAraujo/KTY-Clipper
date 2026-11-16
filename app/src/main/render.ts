@@ -24,7 +24,7 @@ import {
   type Part,
   type Word
 } from '../shared/clips'
-import type { ClipDraft, ClipLayout, ClipOptions, ClipRecord, EncoderInfo, Platform, Rect, Settings } from '../shared/types'
+import type { ClipDraft, ClipLayout, ClipOptions, ClipRecord, ClipReview, EncoderInfo, Platform, Rect, Settings } from '../shared/types'
 
 export interface ClipDeps {
   db: Db
@@ -34,6 +34,8 @@ export interface ClipDeps {
   tools: () => { ffmpeg: string; ffprobe: string } | null
   encoders: () => EncoderInfo[]
   clipsRoot: () => string
+  /** Pasta das capas (miniaturas verticais) dos clipes */
+  cacheDir: string
   /** A IA de texto está configurada (então os automáticos esperam o título dela) */
   aiReady: () => boolean
 }
@@ -79,6 +81,10 @@ interface ClipRow {
   job_id: number | null
   created_at: number
   progress: number | null
+  review: string
+  m_score: number | null
+  m_ai: string | null
+  m_signals: string | null
 }
 
 interface AiJson {
@@ -507,6 +513,8 @@ export class ClipService extends EventEmitter {
     this.db
       .prepare(`UPDATE clips SET status = 'ready', path = ?, duration_s = ?, width = ?, height = ?, size_bytes = ?, layout = ?, error = NULL WHERE id = ?`)
       .run(out, b.duration, b.size.W, b.size.H, size, b.plan.layout, clipId)
+    rmSync(this.coverFile(clipId), { force: true })
+    await this.cover(clipId).catch(() => null)
     const secs = (Date.now() - started) / 1000
     this.d.log.info(
       'clipes',
@@ -525,7 +533,10 @@ export class ClipService extends EventEmitter {
   list(liveId?: number, id?: number): ClipRecord[] {
     const where = id != null ? 'WHERE c.id = ?' : liveId != null ? 'WHERE c.live_id = ?' : ''
     const rows = this.db
-      .prepare(`SELECT c.*, j.progress AS progress FROM clips c LEFT JOIN jobs j ON j.id = c.job_id ${where} ORDER BY c.id DESC LIMIT 500`)
+      .prepare(
+        `SELECT c.*, j.progress AS progress, m.score AS m_score, m.ai AS m_ai, m.signals AS m_signals
+         FROM clips c LEFT JOIN jobs j ON j.id = c.job_id LEFT JOIN moments m ON m.id = c.moment_id ${where} ORDER BY c.id DESC LIMIT 500`
+      )
       .all(...(id != null ? [id] : liveId != null ? [liveId] : [])) as unknown as ClipRow[]
     return rows.map((r) => ({
       id: r.id,
@@ -538,6 +549,9 @@ export class ClipService extends EventEmitter {
       options: parse<ClipOptions>(r.options, null as unknown as ClipOptions),
       layout: r.layout as ClipLayout,
       status: r.status as ClipRecord['status'],
+      review: (['pending', 'approved', 'rejected'].includes(r.review) ? r.review : 'pending') as ClipReview,
+      score: r.m_score,
+      tag: clipTag(r.m_ai, r.m_signals),
       progress: r.status === 'rendering' ? (r.progress ?? 0) : null,
       error: r.error,
       path: r.path && existsSync(r.path) ? r.path : null,
@@ -549,6 +563,28 @@ export class ClipService extends EventEmitter {
       jobId: r.job_id,
       createdAt: r.created_at
     }))
+  }
+
+  setReview(id: number, review: ClipReview): void {
+    if (!['pending', 'approved', 'rejected'].includes(review)) return
+    this.db.prepare('UPDATE clips SET review = ? WHERE id = ?').run(review, id)
+    this.emit('clips')
+  }
+
+  private coverFile(id: number): string {
+    return join(this.d.cacheDir, `capa_${id}.jpg`)
+  }
+
+  /** Capa vertical do clipe pronto (um quadro a 40% do vídeo), criada na primeira vez que é pedida. */
+  async cover(id: number): Promise<string | null> {
+    const out = this.coverFile(id)
+    if (existsSync(out)) return out
+    const r = this.db.prepare(`SELECT path, duration_s FROM clips WHERE id = ? AND status = 'ready'`).get(id) as { path: string | null; duration_s: number } | undefined
+    const tools = this.d.tools()
+    if (!r?.path || !existsSync(r.path) || !tools) return null
+    mkdirSync(this.d.cacheDir, { recursive: true })
+    await runFfmpeg(tools.ffmpeg, ['-hide_banner', '-v', 'error', '-y', '-ss', (r.duration_s * 0.4).toFixed(2), '-i', r.path, '-frames:v', '1', '-vf', 'scale=360:-2', '-q:v', '4', out])
+    return out
   }
 
   pathOf(id: number): string | null {
@@ -567,6 +603,7 @@ export class ClipService extends EventEmitter {
       rmSync(r.path, { force: true })
       rmSync(r.path.replace(/\.mp4$/, '.txt'), { force: true })
     }
+    rmSync(this.coverFile(id), { force: true })
     this.db.prepare('DELETE FROM clips WHERE id = ?').run(id)
     if (r.moment_id != null) {
       const others = this.db.prepare('SELECT 1 FROM clips WHERE moment_id = ?').get(r.moment_id)
@@ -574,6 +611,15 @@ export class ClipService extends EventEmitter {
     }
     this.emit('clips')
   }
+}
+
+/** Etiqueta curta do clipe: categoria da IA, ou de onde veio o sinal forte */
+function clipTag(ai: string | null, signals: string | null): string | null {
+  const a = parse<AiJson & { category?: string } | null>(ai, null)
+  const s = parse<{ clip?: { views?: number }; voice?: unknown }>(signals, {})
+  if (s.clip) return `clipado · ${s.clip.views ?? 0} views`
+  if (s.voice) return 'pediu clipe'
+  return a?.keep !== false && a?.category ? a.category : null
 }
 
 /** Nome de pasta do canal (sem caracteres proibidos no Windows) */

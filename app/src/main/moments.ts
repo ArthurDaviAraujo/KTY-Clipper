@@ -417,6 +417,14 @@ export class MomentsService extends EventEmitter {
     })
   }
 
+  /** Tira o momento da lista: não vira clipe e não volta na próxima detecção. */
+  dismiss(id: number): void {
+    const m = this.db.prepare('SELECT live_id FROM moments WHERE id = ?').get(id) as { live_id: number } | undefined
+    if (!m) return
+    this.db.prepare(`UPDATE moments SET status = 'dismissed' WHERE id = ? AND status = 'new'`).run(id)
+    this.emit('moments', m.live_id)
+  }
+
   thumbPath(id: number): string | null {
     return (this.db.prepare('SELECT thumb_path FROM moments WHERE id = ?').get(id) as { thumb_path: string | null } | undefined)?.thumb_path ?? null
   }

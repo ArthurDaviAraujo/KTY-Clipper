@@ -5,7 +5,8 @@ import { LAYOUTS } from '../../../shared/clips'
 import { FAMILY_LABEL, pickEncoder } from '../../../shared/encoders'
 import type { AiProvider, AiStatus } from '../../../shared/types'
 import type { AppState } from '../state'
-import { Badge, Button, Card, Progress, Section, Segmented, Toggle } from '../ui'
+import { Badge, Button, Card, Progress, Section, Segmented, Toggle, cx } from '../ui'
+import { SystemPanel } from './System'
 
 const PROVIDERS: { value: AiProvider; label: string; cost: string; note: string; ready: boolean }[] = [
   { value: 'gemini', label: 'Gemini', cost: 'Grátis (com cota diária)', note: 'Entende melhor fala e gírias, não pesa no PC. Padrão.', ready: true },
@@ -182,7 +183,7 @@ function SpeechCard({ state }: { state: AppState }) {
     <Card className="space-y-4">
       <p className="text-xs text-muted">
         Transcreve tudo o que o streamer fala, com o horário de cada palavra: serve para o comando de voz, para a IA entender o momento e para as legendas. Nesta máquina
-        o modelo base transcreve cerca de 28× mais rápido que o tempo real.
+        o modelo base transcreve fala contínua cerca de 4 a 5× mais rápido que o tempo real (6 h de live em ~1h20).
       </p>
       {!whisper?.path && <p className="text-xs text-err">whisper-cli não encontrado na pasta de programas.</p>}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -223,7 +224,19 @@ function SpeechCard({ state }: { state: AppState }) {
   )
 }
 
+type Tab = 'deteccao' | 'ia' | 'clipes' | 'gravacao' | 'armazenamento' | 'sistema'
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'deteccao', label: 'Detecção' },
+  { id: 'ia', label: 'IA e fala' },
+  { id: 'clipes', label: 'Clipes' },
+  { id: 'gravacao', label: 'Gravação' },
+  { id: 'armazenamento', label: 'Armazenamento' },
+  { id: 'sistema', label: 'Sistema' }
+]
+
 export default function SettingsPage({ state }: { state: AppState }) {
+  const [tab, setTab] = useState<Tab>('deteccao')
   const { settings: s, updateSettings, resetSettings, hardware, disk, refreshDisk } = state
   if (!s) return null
   const working = hardware?.encoders.filter((e) => e.works) ?? []
@@ -233,15 +246,33 @@ export default function SettingsPage({ state }: { state: AppState }) {
     <div className="mx-auto max-w-4xl space-y-8">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">Ajustes</h2>
-        <Button variant="ghost" onClick={() => void resetSettings()}>
+        <Button variant="ghost" onClick={() => confirm('Voltar todos os ajustes para o padrão?') && void resetSettings()}>
           <RotateCcw size={14} /> Restaurar padrão
         </Button>
       </div>
 
+      <div className="flex flex-wrap gap-1 border-b border-line/60">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            className={cx(
+              '-mb-px border-b-2 px-4 py-2.5 text-sm transition',
+              tab === t.id ? 'border-accent font-medium text-text' : 'border-transparent text-muted hover:text-text'
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'deteccao' && (
+        <>
       <Section title="Detectores de momentos">
         <p className="-mt-1 text-xs text-muted">Ligue ou desligue cada sinal e ajuste quanto ele pesa na nota final.</p>
         <div className="space-y-2">
-          {DETECTORS.map((d) => {
+          {DETECTORS.filter((d) => d.phase <= 1).map((d) => {
             const cfg = s.detectors[d.id]
             const later = d.phase > 1
             return (
@@ -313,6 +344,11 @@ export default function SettingsPage({ state }: { state: AppState }) {
         </Card>
       </Section>
 
+        </>
+      )}
+
+      {tab === 'ia' && (
+        <>
       <Section title="Fala (Whisper)">
         <SpeechCard state={state} />
       </Section>
@@ -347,6 +383,11 @@ export default function SettingsPage({ state }: { state: AppState }) {
         </Card>
       </Section>
 
+        </>
+      )}
+
+      {tab === 'clipes' && (
+        <>
       <Section title="Qualidade do vídeo">
         <Card className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -497,6 +538,11 @@ export default function SettingsPage({ state }: { state: AppState }) {
         </Card>
       </Section>
 
+        </>
+      )}
+
+      {tab === 'gravacao' && (
+        <>
       <Section title="Gravador">
         <Card className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -558,6 +604,11 @@ export default function SettingsPage({ state }: { state: AppState }) {
         </Card>
       </Section>
 
+        </>
+      )}
+
+      {tab === 'sistema' && (
+        <>
       <Section title="Desempenho">
         <Card className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -575,6 +626,11 @@ export default function SettingsPage({ state }: { state: AppState }) {
         </Card>
       </Section>
 
+        </>
+      )}
+
+      {tab === 'armazenamento' && (
+        <>
       <Section title="Armazenamento">
         <Card className="space-y-4">
           <FolderRow
@@ -656,6 +712,11 @@ export default function SettingsPage({ state }: { state: AppState }) {
         </Card>
       </Section>
 
+        </>
+      )}
+
+      {tab === 'sistema' && (
+        <>
       <Section title="Avisos">
         <Card className="flex items-center gap-4">
           <Toggle label="Avisos do Windows" checked={s.notifications.enabled} onChange={(v) => void updateSettings({ notifications: { enabled: v } })} />
@@ -666,15 +727,9 @@ export default function SettingsPage({ state }: { state: AppState }) {
         </Card>
       </Section>
 
-      <Section title="Postagem">
-        <Card className="flex items-center gap-4">
-          <Toggle label="Postar sem aprovação" checked={s.publishing.autoPost} onChange={(v) => void updateSettings({ publishing: { autoPost: v } })} />
-          <div>
-            <p className="text-sm font-medium">Postar sozinho, sem passar pela fila de aprovação</p>
-            <p className="text-xs text-muted">Padrão desligado. Na fase 2 dá para escolher isso por canal.</p>
-          </div>
-        </Card>
-      </Section>
+      <SystemPanel state={state} />
+        </>
+      )}
     </div>
   )
 }

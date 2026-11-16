@@ -23,7 +23,7 @@ import { programDirs } from './tools'
 protocol.registerSchemesAsPrivileged([{ scheme: 'clipador', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 import { GB, clipsRoot, deleteOldest, recordingsRoot, usageBytes } from './storage'
 import { defaultSettings, mergeSettings, sanitizeSettings } from '../shared/settings'
-import type { AiStatus, AppInfo, ClipOptions, ClipRecord, DeepPartial, DiskInfo, HardwareInfo, Platform, Rect, Settings } from '../shared/types'
+import type { AiStatus, AppInfo, ClipOptions, ClipRecord, ClipReview, DeepPartial, DiskInfo, HardwareInfo, Platform, Rect, Settings } from '../shared/types'
 
 /**
  * Pasta de dados: em desenvolvimento fica em <projeto>/dados (fora do git);
@@ -297,6 +297,8 @@ function registerIpc(): void {
   ipcMain.handle('clips:render', (_e, momentId: number, o: ClipOptions) => clips.request(momentId, o))
   ipcMain.handle('clips:list', (_e, liveId?: number) => clips.list(liveId))
   ipcMain.handle('clips:delete', (_e, id: number) => clips.delete(id))
+  ipcMain.handle('clips:review', (_e, id: number, review: ClipReview) => clips.setReview(id, review))
+  ipcMain.handle('moments:dismiss', (_e, id: number) => moments.dismiss(id))
   ipcMain.handle('shell:showInFolder', (_e, p: string) => shell.showItemInFolder(p))
 }
 
@@ -400,6 +402,7 @@ app.whenReady().then(() => {
     },
     encoders: () => hardware.encoders,
     clipsRoot: () => clipsRoot(settings, dataDir),
+    cacheDir: join(dataDir, 'cache'),
     aiReady: () => settings.ai.provider === 'gemini' && !!settings.ai.geminiModel && !!getSecret(db, 'gemini')
   })
   clips.on('clips', () => send('clips', null))
@@ -412,7 +415,7 @@ app.whenReady().then(() => {
     autoReady.set(k, (autoReady.get(k) ?? 0) + 1)
     const pending = clips.list(c.liveId ?? undefined).some((x) => x.auto && (x.status === 'queued' || x.status === 'rendering'))
     if (pending) return
-    notify(`${autoReady.get(k)} clipe(s) pronto(s): ${c.channelName}`, 'Gerados sozinhos a partir dos melhores momentos. Veja em Momentos.')
+    notify(`${autoReady.get(k)} clipe(s) pronto(s): ${c.channelName}`, 'Gerados sozinhos a partir dos melhores momentos. Veja em Clipes > Para revisar.')
     autoReady.delete(k)
   })
   moments.on('detected', (liveId: number) => {
@@ -437,12 +440,16 @@ app.whenReady().then(() => {
   vod.on('ready', (liveId: number) => moments.enqueue(liveId, 'VOD importado'))
   live.on('segment', (s: { liveId: number }) => moments.enqueueThrottled(s.liveId))
   live.on('recordingEnded', (liveId: number) => moments.enqueue(liveId, 'live encerrada'))
-  protocol.handle('clipador', (req) => {
+  protocol.handle('clipador', async (req) => {
     const url = new URL(req.url)
     const m = url.pathname.match(/^\/(\d+)/)
     if (m && url.hostname === 'clipe') {
       const p = clips.pathOf(Number(m[1]))
       return p ? serveVideo(p, req) : new Response('não encontrado', { status: 404 })
+    }
+    if (m && url.hostname === 'capa') {
+      const p = await clips.cover(Number(m[1])).catch(() => null)
+      return p ? net.fetch(pathToFileURL(p).href) : new Response('não encontrado', { status: 404 })
     }
     const p = m && url.hostname === 'miniatura' ? moments.thumbPath(Number(m[1])) : null
     return p ? net.fetch(pathToFileURL(p).href) : new Response('não encontrado', { status: 404 })

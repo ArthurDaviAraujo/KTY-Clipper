@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { AppInfo, ChannelState, DeepPartial, DiskInfo, HardwareInfo, Job, LiveRecord, LogEntry, Settings, ToolInfo } from '../../shared/types'
+import type { AppInfo, ChannelState, ClipRecord, DeepPartial, DiskInfo, HardwareInfo, Job, LiveRecord, LogEntry, Settings, ToolInfo } from '../../shared/types'
 
 export interface AppState {
   info: AppInfo | null
@@ -11,6 +11,8 @@ export interface AppState {
   logs: LogEntry[]
   channels: ChannelState[]
   lives: LiveRecord[]
+  /** Todos os clipes (para a tela Clipes, o Início e o número no menu) */
+  clips: ClipRecord[]
   refreshLives(): Promise<void>
   updateSettings(patch: DeepPartial<Settings>): Promise<void>
   resetSettings(): Promise<void>
@@ -30,9 +32,12 @@ export function useAppState(): AppState {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [channels, setChannels] = useState<ChannelState[]>([])
   const [lives, setLives] = useState<LiveRecord[]>([])
+  const [clips, setClips] = useState<ClipRecord[]>([])
 
   useEffect(() => {
     const api = window.api
+    void api.listClips().then(setClips)
+    const offClips = api.onClips(() => void api.listClips().then(setClips))
     // A biblioteca muda com muitos eventos (pedaços, chat, progresso): recarrega no máximo a cada 1 s
     let livesTimer: ReturnType<typeof setTimeout> | null = null
     const reloadLives = () => {
@@ -76,6 +81,7 @@ export function useAppState(): AppState {
       offHw()
       offChannels()
       offLives()
+      offClips()
       if (livesTimer) clearTimeout(livesTimer)
       clearInterval(t)
     }
@@ -103,5 +109,5 @@ export function useAppState(): AppState {
     setLives(await window.api.listLives())
   }, [])
 
-  return { info, settings, tools, hardware, disk, jobs, logs, channels, lives, refreshLives, updateSettings, resetSettings, refreshTools, refreshDisk, clearFinishedJobs }
+  return { info, settings, tools, hardware, disk, jobs, logs, channels, lives, clips, refreshLives, updateSettings, resetSettings, refreshTools, refreshDisk, clearFinishedJobs }
 }

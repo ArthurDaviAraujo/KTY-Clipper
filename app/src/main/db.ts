@@ -184,6 +184,10 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX clips_live ON clips(live_id);
   CREATE INDEX clips_moment ON clips(moment_id);
+  `,
+  // 9 — revisão do clipe: para revisar, aprovado ou descartado
+  `
+  ALTER TABLE clips ADD COLUMN review TEXT NOT NULL DEFAULT 'pending';
   `
 ]
 

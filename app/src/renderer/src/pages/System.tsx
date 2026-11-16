@@ -14,14 +14,13 @@ const STATUS: Record<JobStatus, { label: string; tone: 'ok' | 'warn' | 'err' | '
 
 const FAMILIES: EncoderFamily[] = ['amd', 'nvidia', 'intel', 'windows', 'cpu']
 
-export default function SystemPage({ state }: { state: AppState }) {
+/** Programas, codificadores, fila de tarefas, registro técnico e pasta de dados (aba Sistema dos Ajustes). */
+export function SystemPanel({ state }: { state: AppState }) {
   const { tools, hardware, jobs, info, refreshTools } = state
   const testing = jobs.some((j) => j.type === 'diagnostico:codificadores' && (j.status === 'running' || j.status === 'queued'))
 
   return (
-    <div className="mx-auto max-w-4xl space-y-8">
-      <h2 className="text-2xl font-bold">Sistema</h2>
-
+    <div className="space-y-8">
       <Section
         title="Programas"
         action={
@@ -38,7 +37,6 @@ export default function SystemPage({ state }: { state: AppState }) {
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{t.label}</span>
                   {t.version && <span className="text-xs text-muted">{t.version}</span>}
-                  {!t.required && <Badge tone="muted">fase 1</Badge>}
                 </div>
                 <p className="text-xs text-muted">{t.purpose}</p>
                 <p className="truncate text-[11px] text-muted/80" title={t.path ?? undefined}>
@@ -128,6 +126,17 @@ export default function SystemPage({ state }: { state: AppState }) {
             </Card>
           ))}
         </div>
+      </Section>
+
+      <Section title="Registro técnico">
+        <Card className="max-h-80 space-y-1 overflow-y-auto font-mono text-[11px]">
+          {state.logs.length === 0 && <p className="text-muted">Vazio.</p>}
+          {[...state.logs].reverse().map((l) => (
+            <p key={l.id} className={l.level === 'error' ? 'text-err' : l.level === 'warn' ? 'text-warn' : 'text-text/80'}>
+              <span className="text-muted">{new Date(l.time).toLocaleTimeString('pt-BR')}</span> [{l.source}] {l.message}
+            </p>
+          ))}
+        </Card>
       </Section>
 
       {info && (

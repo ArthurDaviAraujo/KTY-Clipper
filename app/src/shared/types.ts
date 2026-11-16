@@ -48,6 +48,9 @@ export interface ClipOptions {
 
 export type ClipStatus = 'queued' | 'rendering' | 'ready' | 'failed'
 
+/** Revisão do clipe: esperando você, aprovado (pronto para postar) ou descartado */
+export type ClipReview = 'pending' | 'approved' | 'rejected'
+
 export interface ClipRecord {
   id: number
   momentId: number | null
@@ -60,6 +63,11 @@ export interface ClipRecord {
   /** Layout usado de fato (sem facecam marcada, "jogo + facecam" vira tela inteira) */
   layout: ClipLayout
   status: ClipStatus
+  review: ClipReview
+  /** Nota do momento de origem */
+  score: number | null
+  /** Categoria dada pela IA, ou o clipe da comunidade que originou */
+  tag: string | null
   progress: number | null
   error: string | null
   path: string | null
@@ -465,6 +473,10 @@ export interface Api {
   renderClip(momentId: number, options: ClipOptions): Promise<ClipRecord>
   listClips(liveId?: number): Promise<ClipRecord[]>
   deleteClip(id: number): Promise<void>
+  /** Aprovar, descartar ou voltar para revisão */
+  reviewClip(id: number, review: ClipReview): Promise<void>
+  /** Tira o momento da lista (não vira clipe) */
+  dismissMoment(id: number): Promise<void>
   showInFolder(path: string): Promise<void>
   onClips(cb: () => void): () => void
 }
