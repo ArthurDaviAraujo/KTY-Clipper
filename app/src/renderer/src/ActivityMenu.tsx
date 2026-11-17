@@ -63,18 +63,19 @@ export default function ActivityMenu({ state }: { state: AppState }) {
       <button
         type="button"
         onClick={toggle}
-        className={cx(
-          'relative flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs transition',
-          open ? 'border-accent bg-accent/15 text-text' : 'border-line/70 text-muted hover:border-accent/60 hover:text-text'
-        )}
+        title={active.length ? `${active.length} tarefa(s) em andamento` : 'Atividade e avisos'}
+        className={cx('relative grid size-8 place-items-center rounded-full transition', open ? 'bg-white/[0.12] text-text' : 'text-muted hover:bg-white/[0.07] hover:text-text')}
       >
-        {active.length ? <Loader2 size={14} className="animate-spin text-accent-2" /> : <Bell size={14} />}
-        {active.length ? `${active.length} tarefa(s)` : 'Atividade'}
-        {unread && !open && <span className="absolute -right-1 -top-1 size-2.5 rounded-full bg-err ring-2 ring-bg" />}
+        {active.length ? <Loader2 size={17} className="animate-spin text-accent-2" /> : <Bell size={17} />}
+        {active.length > 0 ? (
+          <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold text-white">{active.length}</span>
+        ) : (
+          unread && !open && <span className="absolute right-0.5 top-0.5 size-2 rounded-full bg-err ring-2 ring-[#1b1726]" />
+        )}
       </button>
 
       {open && (
-        <div className="absolute right-0 top-10 z-40 flex max-h-[75vh] w-[420px] flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl">
+        <div className="absolute right-0 top-11 z-40 flex max-h-[75vh] w-[420px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-2/95 shadow-2xl backdrop-blur-xl">
           <div className="space-y-2 overflow-y-auto p-3">
             <p className="px-1 text-xs font-semibold uppercase tracking-wide text-muted">Em andamento</p>
             {active.length === 0 && <p className="px-1 pb-1 text-sm text-muted">Nada rodando agora.</p>}

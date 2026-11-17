@@ -62,7 +62,17 @@ const api: Api = {
   reviewClip: (id, review) => ipcRenderer.invoke('clips:review', id, review),
   dismissMoment: (id) => ipcRenderer.invoke('moments:dismiss', id),
   showInFolder: (p) => ipcRenderer.invoke('shell:showInFolder', p),
-  onClips: subscribe('clips')
+  onClips: subscribe('clips'),
+  listProfiles: () => ipcRenderer.invoke('profiles:list'),
+  createProfile: (name) => ipcRenderer.invoke('profiles:create', name),
+  switchProfile: (id) => ipcRenderer.invoke('profiles:switch', id),
+  updateProfile: (id, patch) => ipcRenderer.invoke('profiles:update', id, patch),
+  pickProfilePhoto: (id) => ipcRenderer.invoke('profiles:photo', id),
+  deleteProfile: (id) => ipcRenderer.invoke('profiles:delete', id),
+  exportProfile: () => ipcRenderer.invoke('profiles:export'),
+  importProfile: () => ipcRenderer.invoke('profiles:import'),
+  onSettings: subscribe('settings'),
+  onProfiles: subscribe('profiles')
 }
 
 contextBridge.exposeInMainWorld('api', api)

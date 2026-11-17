@@ -1,34 +1,46 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Check, Clapperboard, FolderOpen, Loader2, Play, RefreshCw, RotateCcw, Sparkles, Trash2, Undo2, X } from 'lucide-react'
+import { Check, Clapperboard, FolderOpen, Loader2, Play, RefreshCw, RotateCcw, Search, Sparkles, Trash2, Undo2, X } from 'lucide-react'
 import type { ClipRecord, Job, MomentRecord, TimelinePoint } from '../../../shared/types'
 import { formatTimecode } from '../../../shared/vod'
 import type { AppState } from '../state'
 import { ClipModal, ClipStudio } from '../ClipModal'
-import { Button, Card, cx } from '../ui'
+import { Button, Card, PageHeader, SubTabs, cx } from '../ui'
 
 export type ClipsTab = 'review' | 'approved' | 'rejected' | 'moments'
+export type ClipsSort = 'best' | 'recent'
 
-const TABS: { id: ClipsTab; label: string; empty: string }[] = [
-  { id: 'review', label: 'Para revisar', empty: 'Nenhum clipe esperando você. Os automáticos e os que você gerar aparecem aqui.' },
-  { id: 'approved', label: 'Aprovados', empty: 'Os clipes aprovados ficam aqui, prontos para postar.' },
-  { id: 'rejected', label: 'Descartados', empty: 'Nada descartado.' },
-  { id: 'moments', label: 'Momentos sem clipe', empty: 'Nenhum momento sobrando. Eles aparecem quando uma live é gravada ou um VOD é importado.' }
-]
+const TABS: Record<ClipsTab, { label: string; empty: string }> = {
+  review: { label: 'Para revisar', empty: 'Nenhum clipe esperando você. Os automáticos e os que você gerar aparecem aqui.' },
+  approved: { label: 'Aprovados', empty: 'Os clipes aprovados ficam aqui, prontos para postar.' },
+  rejected: { label: 'Descartados', empty: 'Nada descartado.' },
+  moments: { label: 'Momentos sem clipe', empty: 'Nenhum momento sobrando. Eles aparecem quando uma live é gravada ou um VOD é importado.' }
+}
 
-const scoreTone = (s: number) => (s >= 70 ? 'from-[#ff2d55] to-gold' : s >= 50 ? 'from-accent to-accent-2' : 'from-line to-muted')
+const scoreTone = (s: number) => (s >= 70 ? 'from-[#ff2d55] to-gold' : s >= 50 ? 'from-accent to-violet' : 'from-white/20 to-white/10')
+const norm = (s: string) =>
+  s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
 
 export default function ClipsPage({
   state,
   liveId,
-  setLiveId,
   tab,
-  setTab
+  setTab,
+  sort,
+  setSort,
+  query,
+  clearQuery
 }: {
   state: AppState
   liveId: number | 'all'
-  setLiveId: (v: number | 'all') => void
   tab: ClipsTab
   setTab: (t: ClipsTab) => void
+  sort: ClipsSort
+  setSort: (s: ClipsSort) => void
+  query: string
+  clearQuery: () => void
 }) {
   const [moments, setMoments] = useState<MomentRecord[]>([])
   const [timeline, setTimeline] = useState<TimelinePoint[]>([])
@@ -45,65 +57,59 @@ export default function ClipsPage({
     return window.api.onMoments((id) => (liveId === 'all' || id === liveId) && load())
   }, [liveId])
 
-  const lives = state.lives.filter((l) => l.segments > 0)
-  const clips = state.clips.filter((c) => liveId === 'all' || c.liveId === liveId)
-  const withClip = new Set(clips.map((c) => c.momentId))
-  const free = moments.filter((m) => m.status === 'new' && !withClip.has(m.id)).sort((a, b) => b.score - a.score)
-  const byTab: Record<ClipsTab, number> = {
-    review: clips.filter((c) => c.review === 'pending').length,
-    approved: clips.filter((c) => c.review === 'approved').length,
-    rejected: clips.filter((c) => c.review === 'rejected').length,
-    moments: free.length
-  }
-  const shown = tab === 'moments' ? [] : clips.filter((c) => c.review === (tab === 'review' ? 'pending' : tab === 'approved' ? 'approved' : 'rejected'))
+  const q = norm(query.trim())
+  const live = liveId === 'all' ? null : (state.lives.find((l) => l.id === liveId) ?? null)
+  const scoped = state.clips.filter((c) => liveId === 'all' || c.liveId === liveId)
+  const withClip = new Set(scoped.map((c) => c.momentId))
+  const matchClip = (c: ClipRecord) => !q || norm([c.title, c.titleEn, c.channelName, c.tag ?? '', ...c.hashtags].join(' ')).includes(q)
+  const matchMoment = (m: MomentRecord) => !q || norm([m.ai?.titlePt ?? '', m.ai?.titleEn ?? '', m.channelName, m.speech, ...m.reasons].join(' ')).includes(q)
+  const order = <T extends { score: number | null; createdAt?: number; peakS?: number; id: number }>(a: T, b: T) =>
+    sort === 'best' ? (b.score ?? 0) - (a.score ?? 0) : b.id - a.id
+
+  const review = tab === 'review' ? 'pending' : tab === 'approved' ? 'approved' : 'rejected'
+  const shown = tab === 'moments' ? [] : scoped.filter((c) => c.review === review && matchClip(c)).sort(order)
+  const free = moments.filter((m) => m.status === 'new' && !withClip.has(m.id) && matchMoment(m)).sort(order)
   const jobById = useMemo(() => new Map(state.jobs.map((j) => [j.id, j])), [state.jobs])
   const detecting = state.jobs.some((j) => j.type === 'detect:live' && (j.status === 'running' || j.status === 'queued'))
   const open = studio != null ? (state.clips.find((c) => c.id === studio) ?? null) : null
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-2xl font-bold">Clipes</h2>
-          <p className="text-sm text-muted">Assista, aprove ou descarte. Clique num clipe para abrir.</p>
-        </div>
-        <select
-          value={liveId}
-          onChange={(e) => setLiveId(e.target.value === 'all' ? 'all' : Number(e.target.value))}
-          className="max-w-80 rounded-xl border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-accent"
-        >
-          <option value="all">Todas as lives</option>
-          {lives.map((l) => (
-            <option key={l.id} value={l.id}>
-              {l.channelName} · {new Date(l.startedAt).toLocaleDateString('pt-BR')} · {l.title.slice(0, 40)}
-            </option>
-          ))}
-        </select>
-      </div>
+      <PageHeader
+        title={live ? `${live.channelName} · ${new Date(live.startedAt).toLocaleDateString('pt-BR')}` : 'Todos os clipes'}
+        subtitle={live ? live.title : TABS[tab].label}
+        tabs={
+          <SubTabs
+            value={sort}
+            onChange={setSort}
+            options={[
+              { value: 'best', label: 'Melhores' },
+              { value: 'recent', label: 'Recentes' }
+            ]}
+          />
+        }
+        action={
+          liveId !== 'all' ? (
+            <Button variant="ghost" disabled={detecting} onClick={() => void window.api.detectNow(liveId)} title="Rodar os detectores de novo nesta live">
+              <RefreshCw size={13} className={detecting ? 'animate-spin' : ''} /> {detecting ? 'Procurando…' : 'Procurar de novo'}
+            </Button>
+          ) : undefined
+        }
+      />
 
-      <div className="flex flex-wrap gap-1 border-b border-line/60">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={cx(
-              '-mb-px flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm transition',
-              tab === t.id ? 'border-accent font-medium text-text' : 'border-transparent text-muted hover:text-text'
-            )}
-          >
-            {t.label}
-            {byTab[t.id] > 0 && (
-              <span className={cx('rounded-full px-1.5 text-[11px] tabular-nums', tab === t.id ? 'bg-accent text-white' : 'bg-line/70')}>{byTab[t.id]}</span>
-            )}
+      {q && (
+        <div className="flex items-center gap-2 text-[13px] text-muted">
+          <Search size={13} /> Buscando “{query.trim()}” em {TABS[tab].label.toLowerCase()}
+          <button type="button" onClick={clearQuery} className="text-accent-2 hover:underline">
+            limpar
           </button>
-        ))}
-      </div>
+        </div>
+      )}
 
       {tab !== 'moments' && (
         <>
-          {shown.length === 0 && <Empty text={TABS.find((t) => t.id === tab)!.empty} />}
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
+          {shown.length === 0 && <Empty text={q ? 'Nada encontrado nesta aba.' : TABS[tab].empty} />}
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-4">
             {shown.map((c) => (
               <ClipCard key={c.id} clip={c} job={c.jobId != null ? (jobById.get(c.jobId) ?? null) : null} onOpen={() => setStudio(c.id)} onRetry={() => c.momentId != null && setMaking(c.momentId)} />
             ))}
@@ -113,18 +119,21 @@ export default function ClipsPage({
 
       {tab === 'moments' && (
         <div className="space-y-4">
-          {liveId !== 'all' && (
+          {liveId !== 'all' && timeline.length > 1 && (
             <Card className="space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">Hype da live</p>
-                <Button variant="ghost" disabled={detecting} onClick={() => void window.api.detectNow(liveId)}>
-                  <RefreshCw size={14} className={detecting ? 'animate-spin' : ''} /> {detecting ? 'Procurando…' : 'Procurar de novo'}
-                </Button>
+              <div className="flex items-center gap-4 text-xs text-muted">
+                <span className="font-medium text-text">Hype da live</span>
+                <span className="flex items-center gap-1">
+                  <span className="size-2 rounded-full bg-brand" /> chat
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="size-2 rounded-full bg-gold" /> áudio
+                </span>
               </div>
               <HypeChart points={timeline} moments={moments} />
             </Card>
           )}
-          {free.length === 0 && <Empty text={detecting ? 'Procurando momentos…' : TABS[3].empty} />}
+          {free.length === 0 && <Empty text={detecting ? 'Procurando momentos…' : q ? 'Nada encontrado.' : TABS.moments.empty} />}
           <div className="grid gap-3 lg:grid-cols-2">
             {free.map((m) => (
               <MomentRow key={m.id} m={m} showLive={liveId === 'all'} onMake={() => setMaking(m.id)} />
@@ -160,8 +169,8 @@ export default function ClipsPage({
 
 function Empty({ text }: { text: string }) {
   return (
-    <Card className="flex items-center gap-3 text-sm text-muted">
-      <Sparkles className="shrink-0 text-gold" size={18} /> {text}
+    <Card className="flex items-center gap-3 text-[13px] text-muted">
+      <Sparkles className="shrink-0 text-gold" size={16} /> {text}
     </Card>
   )
 }
@@ -189,33 +198,33 @@ function ClipCard({ clip: c, job, onOpen, onRetry }: { clip: ClipRecord; job: Jo
   const review = (r: ClipRecord['review']) => void window.api.reviewClip(c.id, r)
 
   return (
-    <div className="group overflow-hidden rounded-2xl border border-line/60 bg-card/40 transition hover:border-accent/60">
+    <div className="group overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.035] transition hover:border-white/20">
       <button type="button" onClick={onOpen} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)} className="relative block w-full text-left">
         <ClipCover clip={c} play={hover} />
         {c.score != null && (
-          <span className={cx('absolute left-2 top-2 rounded-lg bg-gradient-to-br px-2 py-0.5 text-sm font-bold text-white shadow', scoreTone(c.score))}>{c.score}</span>
+          <span className={cx('absolute left-2 top-2 rounded-md bg-gradient-to-br px-1.5 py-0.5 text-xs font-bold text-white shadow', scoreTone(c.score))}>{c.score}</span>
         )}
-        {ready && <span className="absolute bottom-2 right-2 rounded-md bg-black/75 px-1.5 py-0.5 text-[11px] tabular-nums text-white">{formatTimecode(c.durationS)}</span>}
+        {ready && <span className="absolute bottom-2 right-2 rounded-md bg-black/70 px-1.5 py-0.5 text-[11px] tabular-nums text-white">{formatTimecode(c.durationS)}</span>}
         {ready && !hover && (
           <span className="absolute inset-0 grid place-items-center opacity-0 transition group-hover:opacity-100">
-            <span className="grid size-11 place-items-center rounded-full bg-black/60 text-white">
-              <Play size={18} />
+            <span className="grid size-10 place-items-center rounded-full bg-black/55 text-white backdrop-blur">
+              <Play size={16} />
             </span>
           </span>
         )}
         {busy && (
-          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-white">
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-[13px] text-white">
             <Loader2 className="animate-spin" />
             {c.status === 'queued' && job?.status !== 'running' ? 'Na fila' : `Gerando ${Math.round(p * 100)}%`}
           </span>
         )}
-        {c.status === 'failed' && <span className="absolute inset-0 grid place-items-center bg-black/50 text-sm text-err">Falhou</span>}
+        {c.status === 'failed' && <span className="absolute inset-0 grid place-items-center bg-black/50 text-[13px] text-err">Falhou</span>}
       </button>
 
       <div className="space-y-2 p-3">
-        <div className="min-h-[2.5rem]">
-          <p className="line-clamp-2 text-sm font-semibold leading-snug">{c.title}</p>
-          <p className="truncate text-xs text-muted">
+        <div className="min-h-[2.4rem]">
+          <p className="line-clamp-2 text-[13px] font-semibold leading-snug">{c.title}</p>
+          <p className="truncate text-[11px] text-muted">
             {c.channelName}
             {c.tag ? ` · ${c.tag}` : ''}
           </p>
@@ -223,33 +232,33 @@ function ClipCard({ clip: c, job, onOpen, onRetry }: { clip: ClipRecord; job: Jo
         <div className="flex gap-1.5">
           {c.status === 'failed' ? (
             <Action onClick={onRetry} title={c.error ?? ''} wide>
-              <RotateCcw size={14} /> Tentar de novo
+              <RotateCcw size={13} /> Tentar de novo
             </Action>
           ) : c.review === 'pending' ? (
             <>
-              <Action onClick={() => review('approved')} disabled={!ready} tone="ok" wide>
-                <Check size={14} /> Aprovar
+              <Action onClick={() => review('approved')} disabled={!ready} tone="primary" wide>
+                <Check size={13} /> Aprovar
               </Action>
               <Action onClick={() => review('rejected')} title="Descartar">
-                <X size={14} />
+                <X size={13} />
               </Action>
             </>
           ) : c.review === 'approved' ? (
             <>
               <Action onClick={() => c.path && void window.api.showInFolder(c.path)} wide>
-                <FolderOpen size={14} /> Pasta
+                <FolderOpen size={13} /> Pasta
               </Action>
               <Action onClick={() => review('pending')} title="Voltar para revisão">
-                <Undo2 size={14} />
+                <Undo2 size={13} />
               </Action>
             </>
           ) : (
             <>
               <Action onClick={() => review('pending')} wide>
-                <Undo2 size={14} /> Restaurar
+                <Undo2 size={13} /> Restaurar
               </Action>
               <Action onClick={() => confirm('Apagar este clipe do disco?') && void window.api.deleteClip(c.id)} title="Apagar do disco">
-                <Trash2 size={14} />
+                <Trash2 size={13} />
               </Action>
             </>
           )}
@@ -272,7 +281,7 @@ function Action({
   title?: string
   wide?: boolean
   disabled?: boolean
-  tone?: 'ok'
+  tone?: 'primary'
 }) {
   return (
     <button
@@ -281,9 +290,9 @@ function Action({
       disabled={disabled}
       onClick={onClick}
       className={cx(
-        'flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40',
+        'flex items-center justify-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40',
         wide && 'flex-1',
-        tone === 'ok' ? 'border-ok/40 bg-ok/10 text-ok hover:bg-ok/20' : 'border-line text-muted hover:border-accent/60 hover:text-text'
+        tone === 'primary' ? 'bg-accent text-white hover:bg-accent-2' : 'border border-white/20 text-text/80 hover:border-white/35 hover:bg-white/5'
       )}
     >
       {children}
@@ -300,31 +309,31 @@ function MomentRow({ m, showLive, onMake }: { m: MomentRecord; showLive: boolean
         type="button"
         title="Abrir o trecho gravado no player"
         onClick={() => void window.api.openMoment(m.id)}
-        className="relative aspect-video w-44 shrink-0 overflow-hidden rounded-xl bg-panel"
+        className="relative aspect-video w-40 shrink-0 overflow-hidden rounded-lg bg-black/30"
       >
         {m.hasThumb ? (
           <img src={`clipador://miniatura/${m.id}`} alt="" className="size-full object-cover" />
         ) : (
           <span className="grid size-full place-items-center text-muted">
-            <Sparkles size={18} />
+            <Sparkles size={16} />
           </span>
         )}
-        <span className={cx('absolute left-1.5 top-1.5 rounded-md bg-gradient-to-br px-1.5 text-xs font-bold text-white', scoreTone(m.score))}>{m.score}</span>
-        <span className="absolute bottom-1.5 right-1.5 rounded bg-black/75 px-1 text-[10px] tabular-nums text-white">{formatTimecode(m.peakS)}</span>
+        <span className={cx('absolute left-1.5 top-1.5 rounded bg-gradient-to-br px-1.5 text-[11px] font-bold text-white', scoreTone(m.score))}>{m.score}</span>
+        <span className="absolute bottom-1.5 right-1.5 rounded bg-black/70 px-1 text-[10px] tabular-nums text-white">{formatTimecode(m.peakS)}</span>
       </button>
       <div className="flex min-w-0 flex-1 flex-col">
-        <p className={cx('line-clamp-2 text-sm font-semibold leading-snug', m.ai && !m.ai.keep && 'text-muted')}>{title}</p>
-        <p className="truncate text-xs text-muted">
+        <p className={cx('line-clamp-2 text-[13px] font-semibold leading-snug', m.ai && !m.ai.keep && 'text-muted')}>{title}</p>
+        <p className="truncate text-[11px] text-muted">
           {showLive ? `${m.channelName} · ` : ''}
           {m.clip ? `clipado · ${m.clip.views} views` : m.voice ? `pediu clipe: “${m.voice.phrase}”` : m.ai ? (m.ai.keep ? m.ai.category : 'IA descartou') : m.reasons[0]}
         </p>
-        <div className="mt-auto flex gap-1.5 pt-2">
+        <div className="mt-auto flex items-center gap-1.5 pt-2">
           <Button onClick={onMake}>
-            <Clapperboard size={14} /> Gerar clipe
+            <Clapperboard size={13} /> Gerar clipe
           </Button>
-          <Button variant="ghost" title="Tirar da lista" onClick={() => void window.api.dismissMoment(m.id)}>
+          <button type="button" title="Tirar da lista" onClick={() => void window.api.dismissMoment(m.id)} className="grid size-7 place-items-center rounded-full text-muted hover:bg-white/10 hover:text-text">
             <X size={14} />
-          </Button>
+          </button>
         </div>
       </div>
     </Card>
@@ -333,7 +342,6 @@ function MomentRow({ m, showLive, onMake }: { m: MomentRecord; showLive: boolean
 
 /** Gráfico do hype ao longo da live (chat em rosa, áudio em dourado) com os momentos marcados. */
 function HypeChart({ points, moments }: { points: TimelinePoint[]; moments: MomentRecord[] }) {
-  if (points.length < 2) return <p className="text-xs text-muted">Sem dados ainda.</p>
   const w = 1000
   const h = 100
   const s0 = points[0].s
@@ -341,11 +349,11 @@ function HypeChart({ points, moments }: { points: TimelinePoint[]; moments: Mome
   const x = (s: number) => ((s - s0) / (s1 - s0)) * w
   const path = (k: 'chat' | 'audio') => points.map((p, i) => `${i ? 'L' : 'M'}${x(p.s).toFixed(1)},${(h - p[k] * (h - 6) - 3).toFixed(1)}`).join(' ')
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="h-24 w-full rounded-xl bg-panel">
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="h-20 w-full rounded-lg bg-black/20">
       <path d={path('audio')} fill="none" stroke="var(--color-gold)" strokeWidth="1.5" opacity="0.8" vectorEffect="non-scaling-stroke" />
-      <path d={path('chat')} fill="none" stroke="var(--color-accent)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+      <path d={path('chat')} fill="none" stroke="var(--color-brand)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
       {moments.map((m) => (
-        <line key={m.id} x1={x(m.peakS)} x2={x(m.peakS)} y1={0} y2={h} stroke="white" strokeWidth="1.5" opacity="0.6" vectorEffect="non-scaling-stroke">
+        <line key={m.id} x1={x(m.peakS)} x2={x(m.peakS)} y1={0} y2={h} stroke="white" strokeWidth="1.5" opacity="0.5" vectorEffect="non-scaling-stroke">
           <title>
             {formatTimecode(m.peakS)} · nota {m.score}
           </title>

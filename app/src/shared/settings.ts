@@ -83,6 +83,33 @@ function mergeDeep(base: Record<string, unknown>, patch: unknown): Record<string
   return out
 }
 
+/**
+ * Ajustes que são do PC, não do perfil: pastas, programas, desempenho, codificador e núcleos do Whisper.
+ * Trocar de perfil ou importar predefinições de outro PC nunca muda estes.
+ */
+export function withMachine(target: Settings, machine: Settings): Settings {
+  const out = structuredClone(target)
+  out.storage = structuredClone(machine.storage)
+  out.toolPaths = { ...machine.toolPaths }
+  out.performance = { ...machine.performance }
+  out.quality.encoder = machine.quality.encoder
+  out.speech.threads = machine.speech.threads
+  out.dataDir = machine.dataDir
+  return out
+}
+
+/** Predefinições para levar a outro PC (sem pastas nem caminhos deste PC). */
+export function portableSettings(s: Settings): DeepPartial<Settings> {
+  const out = structuredClone(s) as DeepPartial<Settings> & Record<string, unknown>
+  delete out.storage
+  delete out.toolPaths
+  delete out.performance
+  delete out.dataDir
+  if (out.quality) delete out.quality.encoder
+  if (out.speech) delete out.speech.threads
+  return out
+}
+
 /** Limita valores numéricos a faixas válidas. */
 export function sanitizeSettings(s: Settings): Settings {
   const out = structuredClone(s)

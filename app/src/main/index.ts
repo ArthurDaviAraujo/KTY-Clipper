@@ -2,7 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, net, Notification, protocol, shell
 import { pathToFileURL } from 'url'
 import { Readable } from 'stream'
 import { setHttpFetch } from './platforms/http'
-import { createReadStream, mkdirSync, statSync } from 'fs'
+import { createReadStream, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { userInfo } from 'os'
+import { ProfileStore } from './profiles'
 import { dirname, isAbsolute, join } from 'path'
 import { openDb, kvGet, kvSet, type Db } from './db'
 import { JobQueue, limitsFor } from './jobs'
@@ -22,7 +24,7 @@ import { programDirs } from './tools'
 // Protocolo próprio para as telas mostrarem miniaturas do disco (clipador://miniatura/<id>)
 protocol.registerSchemesAsPrivileged([{ scheme: 'clipador', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 import { GB, clipsRoot, deleteOldest, recordingsRoot, usageBytes } from './storage'
-import { defaultSettings, mergeSettings, sanitizeSettings } from '../shared/settings'
+import { defaultSettings, mergeSettings, portableSettings, sanitizeSettings, withMachine } from '../shared/settings'
 import type { AiStatus, AppInfo, ClipOptions, ClipRecord, ClipReview, DeepPartial, DiskInfo, HardwareInfo, Platform, Rect, Settings } from '../shared/types'
 
 /**
@@ -44,14 +46,17 @@ let live: LiveService
 let vod: VodService
 let moments: MomentsService
 let clips: ClipService
+let profiles: ProfileStore
 let win: BrowserWindow | null = null
 
 const send = (channel: string, payload: unknown) => {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
 }
 
+/** Ajustes do perfil ativo (os de antes dos perfis ficam como base do primeiro). */
 function loadSettings(): Settings {
-  const s = sanitizeSettings(mergeSettings(defaultSettings(), kvGet<unknown>(db, 'settings') ?? {}))
+  const raw = profiles.settingsOf(profiles.activeId()) ?? kvGet<unknown>(db, 'settings') ?? {}
+  const s = sanitizeSettings(mergeSettings(defaultSettings(), raw))
   // Pasta salva que não é caminho absoluto volta para o padrão (evita travar o app ao abrir)
   for (const k of ['recordingsDir', 'clipsDir'] as const) if (s.storage[k] && !isAbsolute(s.storage[k])) s.storage[k] = ''
   return s
@@ -59,8 +64,21 @@ function loadSettings(): Settings {
 
 function saveSettings(next: Settings): Settings {
   settings = sanitizeSettings(next)
+  profiles.saveSettings(profiles.activeId(), settings)
+  // Cópia da máquina: base para perfis novos e para o próximo início
   kvSet(db, 'settings', settings)
   return settings
+}
+
+/** Entra noutro perfil: os ajustes dele valem, mas pastas e programas continuam os deste PC. */
+function enterProfile(id: number): void {
+  profiles.setActive(id)
+  const theirs = sanitizeSettings(mergeSettings(defaultSettings(), profiles.settingsOf(id) ?? {}))
+  saveSettings(withMachine(theirs, settings))
+  send('settings', settings)
+  send('profiles', profiles.list())
+  const p = profiles.list().profiles.find((x) => x.id === id)
+  logger.info('perfil', `Perfil ativo: ${p?.name ?? id}.`)
 }
 
 function loadHardware(): HardwareInfo {
@@ -231,8 +249,8 @@ function registerIpc(): void {
     return next
   })
   ipcMain.handle('settings:reset', () => {
-    logger.info('ajustes', 'Ajustes restaurados para o padrão.')
-    return saveSettings(defaultSettings())
+    logger.info('ajustes', 'Ajustes restaurados para o padrão (pastas e programas deste PC mantidos).')
+    return saveSettings(withMachine(defaultSettings(), settings))
   })
   ipcMain.handle('tools:get', (_e, refresh?: boolean) => getTools(settings, !!refresh))
   ipcMain.handle('hardware:get', () => hardware)
@@ -300,6 +318,61 @@ function registerIpc(): void {
   ipcMain.handle('clips:review', (_e, id: number, review: ClipReview) => clips.setReview(id, review))
   ipcMain.handle('moments:dismiss', (_e, id: number) => moments.dismiss(id))
   ipcMain.handle('shell:showInFolder', (_e, p: string) => shell.showItemInFolder(p))
+
+  ipcMain.handle('profiles:list', () => profiles.list())
+  ipcMain.handle('profiles:create', (_e, name: string) => {
+    const id = profiles.create(name, withMachine(defaultSettings(), settings))
+    enterProfile(id)
+    return profiles.list()
+  })
+  ipcMain.handle('profiles:switch', (_e, id: number) => {
+    if (id !== profiles.activeId()) enterProfile(id)
+    return profiles.list()
+  })
+  ipcMain.handle('profiles:update', (_e, id: number, patch: { name?: string; color?: string }) => {
+    profiles.update(id, patch)
+    send('profiles', profiles.list())
+    return profiles.list()
+  })
+  ipcMain.handle('profiles:photo', async (_e, id: number) => {
+    const r = await dialog.showOpenDialog(win!, { title: 'Foto do perfil', properties: ['openFile'], filters: [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] })
+    if (!r.canceled && r.filePaths[0]) profiles.setPhoto(id, r.filePaths[0])
+    send('profiles', profiles.list())
+    return profiles.list()
+  })
+  ipcMain.handle('profiles:delete', (_e, id: number) => {
+    profiles.delete(id)
+    send('profiles', profiles.list())
+    return profiles.list()
+  })
+  ipcMain.handle('profiles:export', async () => {
+    const p = profiles.list().profiles.find((x) => x.id === profiles.activeId())
+    const r = await dialog.showSaveDialog(win!, {
+      title: 'Exportar predefinições',
+      defaultPath: join(app.getPath('documents'), `${(p?.name ?? 'perfil').replace(/[<>:"/\\|?*]/g, '')}.clipador.json`),
+      filters: [{ name: 'Predefinições do Clipador', extensions: ['json'] }]
+    })
+    if (r.canceled || !r.filePath) return null
+    writeFileSync(r.filePath, JSON.stringify({ app: 'clipador-kty', version: 1, name: p?.name, color: p?.color, settings: portableSettings(settings) }, null, 2), 'utf8')
+    logger.info('perfil', `Predefinições exportadas para ${r.filePath}.`)
+    return r.filePath
+  })
+  ipcMain.handle('profiles:import', async () => {
+    const r = await dialog.showOpenDialog(win!, { title: 'Importar predefinições', properties: ['openFile'], filters: [{ name: 'Predefinições do Clipador', extensions: ['json'] }] })
+    if (r.canceled || !r.filePaths[0]) return null
+    let data: { app?: string; name?: string; color?: string; settings?: unknown }
+    try {
+      data = JSON.parse(readFileSync(r.filePaths[0], 'utf8'))
+    } catch {
+      throw new Error('Arquivo inválido (não é JSON).')
+    }
+    if (data.app !== 'clipador-kty') throw new Error('Este arquivo não é de predefinições do Clipador.')
+    const imported = withMachine(sanitizeSettings(mergeSettings(defaultSettings(), data.settings ?? {})), settings)
+    const id = profiles.create(`${data.name ?? 'Perfil'} (importado)`, imported)
+    if (data.color) profiles.update(id, { color: data.color })
+    enterProfile(id)
+    return profiles.list()
+  })
 }
 
 function createWindow(): void {
@@ -309,10 +382,10 @@ function createWindow(): void {
     minWidth: 1080,
     minHeight: 700,
     show: false,
-    backgroundColor: '#1a0710',
+    backgroundColor: '#191523',
     title: 'Clipador KTY',
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#1a0710', symbolColor: '#f5d0e0', height: 40 },
+    titleBarOverlay: { color: '#1b1726', symbolColor: '#cfc8e6', height: 48 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -335,6 +408,8 @@ app.whenReady().then(() => {
   setHttpFetch((input, init) => net.fetch(input as string, init))
   db = openDb(dbPath)
   logger = new Logger(db)
+  profiles = new ProfileStore(db, join(dataDir, 'perfis'))
+  profiles.ensure(kvGet<unknown>(db, 'settings'), userInfo().username || 'Meu perfil')
   settings = loadSettings()
   hardware = loadHardware()
   queue = new JobQueue(db, () => limitsFor(settings.performance.mode, hardware.cores))
@@ -446,6 +521,10 @@ app.whenReady().then(() => {
     if (m && url.hostname === 'clipe') {
       const p = clips.pathOf(Number(m[1]))
       return p ? serveVideo(p, req) : new Response('não encontrado', { status: 404 })
+    }
+    if (m && url.hostname === 'perfil') {
+      const p = profiles.photoPath(Number(m[1]))
+      return p ? net.fetch(pathToFileURL(p).href) : new Response('não encontrado', { status: 404 })
     }
     if (m && url.hostname === 'capa') {
       const p = await clips.cover(Number(m[1])).catch(() => null)

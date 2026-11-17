@@ -188,6 +188,17 @@ const MIGRATIONS: string[] = [
   // 9 — revisão do clipe: para revisar, aprovado ou descartado
   `
   ALTER TABLE clips ADD COLUMN review TEXT NOT NULL DEFAULT 'pending';
+  `,
+  // 10 — perfis deste PC: cada um com seus ajustes e predefinições
+  `
+  CREATE TABLE profiles (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    color      TEXT    NOT NULL DEFAULT '#3d7bf6',
+    photo      TEXT,
+    settings   TEXT,
+    created_at INTEGER NOT NULL
+  );
   `
 ]
 

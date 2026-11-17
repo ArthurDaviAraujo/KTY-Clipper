@@ -413,6 +413,22 @@ export interface AppInfo {
   dev: boolean
 }
 
+/** Perfil deste PC: nome, cor, foto e os próprios ajustes */
+export interface Profile {
+  id: number
+  name: string
+  color: string
+  hasPhoto: boolean
+  /** Muda quando a foto é trocada (para a tela recarregar a imagem) */
+  photoVersion: number
+  createdAt: number
+}
+
+export interface ProfilesInfo {
+  profiles: Profile[]
+  activeId: number
+}
+
 /** API exposta às telas pelo preload (window.api). */
 export interface Api {
   appInfo(): Promise<AppInfo>
@@ -479,6 +495,21 @@ export interface Api {
   dismissMoment(id: number): Promise<void>
   showInFolder(path: string): Promise<void>
   onClips(cb: () => void): () => void
+  listProfiles(): Promise<ProfilesInfo>
+  /** Cria um perfil (ajustes padrão, mantendo as pastas e programas deste PC) e entra nele */
+  createProfile(name: string): Promise<ProfilesInfo>
+  switchProfile(id: number): Promise<ProfilesInfo>
+  updateProfile(id: number, patch: { name?: string; color?: string }): Promise<ProfilesInfo>
+  /** Abre o seletor de imagem e usa como foto do perfil */
+  pickProfilePhoto(id: number): Promise<ProfilesInfo>
+  deleteProfile(id: number): Promise<ProfilesInfo>
+  /** Salva as predefinições do perfil num arquivo (para levar a outro PC) */
+  exportProfile(): Promise<string | null>
+  /** Cria um perfil a partir de um arquivo exportado */
+  importProfile(): Promise<ProfilesInfo | null>
+  /** Ajustes trocaram (outro perfil entrou) */
+  onSettings(cb: (s: Settings) => void): () => void
+  onProfiles(cb: (p: ProfilesInfo) => void): () => void
 }
 
 export type DeepPartial<T> = {

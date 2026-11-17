@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { AppInfo, ChannelState, ClipRecord, DeepPartial, DiskInfo, HardwareInfo, Job, LiveRecord, LogEntry, Settings, ToolInfo } from '../../shared/types'
+import type { AppInfo, ChannelState, ClipRecord, DeepPartial, DiskInfo, HardwareInfo, Job, LiveRecord, LogEntry, ProfilesInfo, Settings, ToolInfo } from '../../shared/types'
 
 export interface AppState {
   info: AppInfo | null
@@ -13,6 +13,8 @@ export interface AppState {
   lives: LiveRecord[]
   /** Todos os clipes (para a tela Clipes, o Início e o número no menu) */
   clips: ClipRecord[]
+  profiles: ProfilesInfo | null
+  setProfiles(p: ProfilesInfo): void
   refreshLives(): Promise<void>
   updateSettings(patch: DeepPartial<Settings>): Promise<void>
   resetSettings(): Promise<void>
@@ -33,11 +35,16 @@ export function useAppState(): AppState {
   const [channels, setChannels] = useState<ChannelState[]>([])
   const [lives, setLives] = useState<LiveRecord[]>([])
   const [clips, setClips] = useState<ClipRecord[]>([])
+  const [profiles, setProfiles] = useState<ProfilesInfo | null>(null)
 
   useEffect(() => {
     const api = window.api
     void api.listClips().then(setClips)
     const offClips = api.onClips(() => void api.listClips().then(setClips))
+    void api.listProfiles().then(setProfiles)
+    const offProfiles = api.onProfiles(setProfiles)
+    // Outro perfil entrou: os ajustes mudam todos de uma vez
+    const offSettings = api.onSettings(setSettings)
     // A biblioteca muda com muitos eventos (pedaços, chat, progresso): recarrega no máximo a cada 1 s
     let livesTimer: ReturnType<typeof setTimeout> | null = null
     const reloadLives = () => {
@@ -82,6 +89,8 @@ export function useAppState(): AppState {
       offChannels()
       offLives()
       offClips()
+      offProfiles()
+      offSettings()
       if (livesTimer) clearTimeout(livesTimer)
       clearInterval(t)
     }
@@ -109,5 +118,5 @@ export function useAppState(): AppState {
     setLives(await window.api.listLives())
   }, [])
 
-  return { info, settings, tools, hardware, disk, jobs, logs, channels, lives, clips, refreshLives, updateSettings, resetSettings, refreshTools, refreshDisk, clearFinishedJobs }
+  return { info, settings, tools, hardware, disk, jobs, logs, channels, lives, clips, profiles, setProfiles, refreshLives, updateSettings, resetSettings, refreshTools, refreshDisk, clearFinishedJobs }
 }

@@ -487,14 +487,14 @@ export function ClipStudio({ clip, moment, onClose, onEdit }: { clip: ClipRecord
                   type="button"
                   disabled={!ready}
                   onClick={() => review('approved', true)}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-ok/90 py-2.5 text-sm font-semibold text-black transition hover:bg-ok disabled:opacity-40"
+                  className="flex flex-1 items-center justify-center gap-2 rounded-full bg-accent py-2 text-sm font-semibold text-white transition hover:bg-accent-2 disabled:opacity-40"
                 >
                   <Check size={16} /> Aprovar
                 </button>
                 <button
                   type="button"
                   onClick={() => review('rejected', true)}
-                  className="flex items-center justify-center gap-2 rounded-xl border border-line px-4 py-2.5 text-sm text-muted transition hover:border-err/60 hover:text-err"
+                  className="flex items-center justify-center gap-2 rounded-full border border-white/20 px-4 py-2 text-sm text-muted transition hover:border-err/60 hover:text-err"
                 >
                   <X size={16} /> Descartar
                 </button>

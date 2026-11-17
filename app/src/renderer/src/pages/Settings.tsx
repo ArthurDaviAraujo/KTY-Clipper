@@ -5,8 +5,9 @@ import { LAYOUTS } from '../../../shared/clips'
 import { FAMILY_LABEL, pickEncoder } from '../../../shared/encoders'
 import type { AiProvider, AiStatus } from '../../../shared/types'
 import type { AppState } from '../state'
-import { Badge, Button, Card, Progress, Section, Segmented, Toggle, cx } from '../ui'
+import { Badge, Button, Card, PageHeader, Progress, Section, Segmented, Toggle } from '../ui'
 import { SystemPanel } from './System'
+import { ProfilePanel } from './Profile'
 
 const PROVIDERS: { value: AiProvider; label: string; cost: string; note: string; ready: boolean }[] = [
   { value: 'gemini', label: 'Gemini', cost: 'Grátis (com cota diária)', note: 'Entende melhor fala e gírias, não pesa no PC. Padrão.', ready: true },
@@ -224,48 +225,39 @@ function SpeechCard({ state }: { state: AppState }) {
   )
 }
 
-type Tab = 'deteccao' | 'ia' | 'clipes' | 'gravacao' | 'armazenamento' | 'sistema'
+export type SettingsTab = 'deteccao' | 'ia' | 'clipes' | 'gravacao' | 'armazenamento' | 'perfil' | 'sistema'
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'deteccao', label: 'Detecção' },
-  { id: 'ia', label: 'IA e fala' },
-  { id: 'clipes', label: 'Clipes' },
-  { id: 'gravacao', label: 'Gravação' },
-  { id: 'armazenamento', label: 'Armazenamento' },
-  { id: 'sistema', label: 'Sistema' }
-]
+const TITLES: Record<SettingsTab, { title: string; subtitle: string }> = {
+  deteccao: { title: 'Detecção', subtitle: 'Quais sinais viram momento e com que força.' },
+  ia: { title: 'IA e fala', subtitle: 'Transcrição com o Whisper e revisão dos momentos pela IA.' },
+  clipes: { title: 'Clipes', subtitle: 'Layout, legenda, título, duração e qualidade dos clipes.' },
+  gravacao: { title: 'Gravação', subtitle: 'Como as lives são vigiadas e gravadas.' },
+  armazenamento: { title: 'Armazenamento', subtitle: 'Onde ficam as gravações e os clipes, e o limite de espaço.' },
+  perfil: { title: 'Perfil', subtitle: 'Cada perfil guarda os próprios ajustes e predefinições.' },
+  sistema: { title: 'Sistema', subtitle: 'Desempenho, avisos, programas, placa de vídeo e registro.' }
+}
 
-export default function SettingsPage({ state }: { state: AppState }) {
-  const [tab, setTab] = useState<Tab>('deteccao')
+export default function SettingsPage({ state, tab }: { state: AppState; tab: SettingsTab }) {
   const { settings: s, updateSettings, resetSettings, hardware, disk, refreshDisk } = state
   if (!s) return null
   const working = hardware?.encoders.filter((e) => e.works) ?? []
   const auto = hardware ? pickEncoder(hardware.encoders, '', s.quality.preset) : null
 
   return (
-    <div className="mx-auto max-w-4xl space-y-8">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">Ajustes</h2>
-        <Button variant="ghost" onClick={() => confirm('Voltar todos os ajustes para o padrão?') && void resetSettings()}>
-          <RotateCcw size={14} /> Restaurar padrão
-        </Button>
-      </div>
+    <div className="mx-auto max-w-4xl space-y-7">
+      <PageHeader
+        title={TITLES[tab].title}
+        subtitle={TITLES[tab].subtitle}
+        action={
+          tab !== 'perfil' && tab !== 'sistema' ? (
+            <Button variant="ghost" onClick={() => confirm('Voltar todos os ajustes deste perfil para o padrão? Pastas e programas ficam.') && void resetSettings()}>
+              <RotateCcw size={13} /> Restaurar padrão
+            </Button>
+          ) : undefined
+        }
+      />
 
-      <div className="flex flex-wrap gap-1 border-b border-line/60">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={cx(
-              '-mb-px border-b-2 px-4 py-2.5 text-sm transition',
-              tab === t.id ? 'border-accent font-medium text-text' : 'border-transparent text-muted hover:text-text'
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {tab === 'perfil' && <ProfilePanel state={state} />}
 
       {tab === 'deteccao' && (
         <>
