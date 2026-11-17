@@ -15,6 +15,8 @@ export type JobHandler = (payload: unknown, ctx: JobContext) => Promise<unknown>
 interface HandlerDef {
   resource: JobResource
   handler: JobHandler
+  /** Tarefas com a mesma chave nunca rodam juntas (ex.: duas detecções da mesma live) */
+  key?: (payload: unknown) => string | null
 }
 
 export interface EnqueueOptions {
@@ -77,7 +79,7 @@ function toJob(r: Row): Job {
  */
 export class JobQueue extends EventEmitter {
   private handlers = new Map<string, HandlerDef>()
-  private running = new Map<number, { ctrl: AbortController; resource: JobResource }>()
+  private running = new Map<number, { ctrl: AbortController; resource: JobResource; key: string | null }>()
   private retryTimers = new Set<NodeJS.Timeout>()
   private started = false
   private stopping = false
@@ -91,8 +93,12 @@ export class JobQueue extends EventEmitter {
     super()
   }
 
-  register(type: string, resource: JobResource, handler: JobHandler): void {
-    this.handlers.set(type, { resource, handler })
+  /**
+   * `key`: tarefas do mesmo tipo com a mesma chave esperam a anterior terminar
+   * (ex.: a detecção "live encerrada" não começa enquanto a "gravação em andamento" da mesma live roda).
+   */
+  register(type: string, resource: JobResource, handler: JobHandler, key?: (payload: unknown) => string | null): void {
+    this.handlers.set(type, { resource, handler, key })
   }
 
   enqueue(type: string, label: string, payload: unknown = null, opts: EnqueueOptions = {}): Job {
@@ -167,7 +173,13 @@ export class JobQueue extends EventEmitter {
     if (j) this.emit('job', j)
   }
 
-  private runningBy(resource: JobResource): number {
+  /** Tarefas rodando agora, de qualquer recurso. */
+  runningTotal(): number {
+    return this.running.size
+  }
+
+  /** Tarefas rodando agora que usam o recurso (ex.: quantas detecções dividem o processador). */
+  runningBy(resource: JobResource): number {
     let n = 0
     for (const r of this.running.values()) if (r.resource === resource) n++
     return n
@@ -181,20 +193,26 @@ export class JobQueue extends EventEmitter {
       .prepare(`SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, id LIMIT 500`)
       .all() as unknown as Row[]
     const used: Record<string, number> = {}
+    const busyKeys = new Set([...this.running.values()].map((r) => r.key).filter((k): k is string => !!k))
     for (const r of queued) {
       const res = r.resource as JobResource
       used[res] ??= this.runningBy(res)
       if (used[res] >= (limits[res] ?? 1)) continue
-      if (!this.handlers.has(r.type)) continue
+      const def = this.handlers.get(r.type)
+      if (!def) continue
+      const key = def.key ? def.key(parse(r.payload)) : null
+      const fullKey = key ? `${r.type}:${key}` : null
+      if (fullKey && busyKeys.has(fullKey)) continue
+      if (fullKey) busyKeys.add(fullKey)
       used[res]++
-      void this.run(toJob(r))
+      void this.run(toJob(r), fullKey)
     }
   }
 
-  private async run(job: Job): Promise<void> {
+  private async run(job: Job, key: string | null = null): Promise<void> {
     const def = this.handlers.get(job.type)!
     const ctrl = new AbortController()
-    this.running.set(job.id, { ctrl, resource: job.resource })
+    this.running.set(job.id, { ctrl, resource: job.resource, key })
     const attempts = job.attempts + 1
     this.db.prepare(`UPDATE jobs SET status = 'running', attempts = ?, started_at = ?, error = NULL WHERE id = ?`).run(attempts, this.now(), job.id)
     this.emitJob(job.id)

@@ -596,6 +596,32 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
         </Card>
       </Section>
 
+      <Section title="Segundo plano">
+        <Card className="space-y-4">
+          <div className="flex items-center gap-4">
+            <Toggle label="Não deixar o PC suspender" checked={s.background.keepAwake} onChange={(v) => void updateSettings({ background: { keepAwake: v } })} />
+            <div>
+              <p className="text-sm font-medium">Não deixar o PC suspender enquanto grava</p>
+              <p className="text-xs text-muted">Vale enquanto houver live gravando ou tarefa rodando. A tela ainda pode apagar; depois o PC volta a suspender normalmente.</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <Toggle label="Fechar para a bandeja" checked={s.background.closeToTray} onChange={(v) => void updateSettings({ background: { closeToTray: v } })} />
+            <div>
+              <p className="text-sm font-medium">Fechar a janela deixa o app na bandeja</p>
+              <p className="text-xs text-muted">Continua vigiando e gravando perto do relógio. Para fechar de vez: botão direito no ícone &gt; Sair.</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <Toggle label="Abrir com o Windows" checked={s.background.openAtLogin} onChange={(v) => void updateSettings({ background: { openAtLogin: v } })} />
+            <div>
+              <p className="text-sm font-medium">Abrir junto com o Windows</p>
+              <p className="text-xs text-muted">Começa escondido na bandeja; se o PC reiniciar de madrugada, as gravações voltam sozinhas.</p>
+            </div>
+          </div>
+        </Card>
+      </Section>
+
         </>
       )}
 
@@ -691,14 +717,12 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <Toggle
-              label="Apagar segmentos sem clipe"
-              checked={s.storage.deleteUnusedSegments}
-              onChange={(v) => void updateSettings({ storage: { deleteUnusedSegments: v } })}
-            />
+            <Toggle label="Apagar segmentos sem clipe" checked={false} disabled onChange={() => undefined} />
             <div>
-              <p className="text-sm font-medium">Apagar pedaços já processados que não viraram clipe</p>
-              <p className="text-xs text-muted">Economiza disco, mas impede reprocessar a live inteira depois.</p>
+              <p className="flex items-center gap-2 text-sm font-medium">
+                Apagar pedaços já processados que não viraram clipe <Badge tone="muted">em breve</Badge>
+              </p>
+              <p className="text-xs text-muted">Economiza disco, mas impede reprocessar a live inteira depois. Por enquanto, use o limite de espaço acima.</p>
             </div>
           </div>
         </Card>

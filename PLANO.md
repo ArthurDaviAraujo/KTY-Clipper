@@ -1,12 +1,13 @@
 # Clipador KTY — Plano do projeto
 
-> Versão 1 do plano, 2026-11-16. Documento vivo: muda conforme testamos.
+> Versão 1 do plano, 2026-11-16 (atualizado em 2026-11-17). Documento vivo: muda conforme testamos.
 
 ## 1. O que é
 
 App desktop para Windows que vigia canais de streamers (Twitch e Kick), grava as lives, encontra os melhores momentos com IA e entrega clipes verticais prontos (legenda, título, hashtags) para canais de YouTube Shorts e TikTok, em português e inglês.
 
 - **Para quem:** uso pessoal e de alguns amigos. Cada um roda no próprio PC, com os próprios canais e chaves.
+- **Para qualquer live (decisão do usuário, 2026-11-17):** qualquer jogo, streamer e modalidade (jogo, conversa como Just Chatting, podcast e react, IRL, esporte, música e arte). O lançamento do GTA 6 (19/11/2026) é a primeira grande motivação, não o limite: nada no app depende de um jogo.
 - **Princípio:** todo recurso pode ser ligado e desligado, e cada detector tem peso ajustável.
 - **Projeto separado** do yt-dlp Studio. Podemos copiar ideias e trechos de lá quando fizer sentido, sempre trazendo para dentro deste repositório.
 
@@ -19,7 +20,7 @@ App desktop para Windows que vigia canais de streamers (Twitch e Kick), grava as
 | Picos de chat comparados ao normal do canal | ClipFinder (Hype Map) | Chat capturado ao vivo (não depende de API não oficial de replay) |
 | Voz, gritos, risadas, "clip that" | Auto-Clipper, StreamLadder | Gatilhos em PT e EN editáveis |
 | Transcrição + IA que entende a fala | ClipFinder, clipsmith | Provedor de IA plugável (local, API ou assinatura) |
-| Eventos na tela do jogo | Auto-Clipper, Powder | Perfil próprio do GTA 6 (depois do lançamento) |
+| Eventos na tela do jogo | Auto-Clipper, Powder | Perfis por jogo (o primeiro será o GTA 6, depois do lançamento) |
 | **Mesmo momento em vários streamers** | Ninguém | Agrupa por horário real (UTC) e por assunto |
 | Nota de viralidade 0–100 | StreamLadder | Nota explicada: quais sinais pesaram |
 | Aprender por canal e por desempenho | AutoClip | Usa as métricas reais dos seus canais |
@@ -33,7 +34,7 @@ App desktop para Windows que vigia canais de streamers (Twitch e Kick), grava as
 
 ```
 ┌────────────────────── App Electron (React + TypeScript + Tailwind) ──────────────────────┐
-│  Telas: Canais · Ao vivo · Momentos · Fila de aprovação · Editor · Postagens · Ajustes    │
+│  Telas: Início · Clipes · Canais · Ajustes  (busca, atividade e perfil no topo)           │
 └───────────────┬──────────────────────────────────────────────────────────────────────────┘
                 │ IPC
 ┌───────────────▼──────────────── Processo principal (Node) ───────────────────────────────┐
@@ -92,6 +93,28 @@ Lista original:
 - **Saída:** clipes no D: (`clipes/<canal>/`) com um `.txt` de títulos, hashtags e créditos. Player dentro do app, que pula para qualquer ponto.
 - **Proteção:** momento com clipe fica guardado e não some quando a detecção roda de novo.
 - **Medido:** clipe de 60 s em 1080×1920 gerado em ~20 s com `h264_amf`, 59,94 fps, −14,2 LUFS.
+
+**Etapa 1f — fila de aprovação e telas novas (2026-11-16, aprovada pelo usuário em 2026-11-17; falta a exportação):**
+- **Revisão:** cada clipe fica "para revisar", "aprovado" ou "descartado". Aprovar e descartar no player e nos cartões; os descartados podem ser restaurados ou apagados. Um clipe por momento: gerar de novo substitui o anterior.
+- **Telas:** 4 abas (Início, Clipes, Canais, Ajustes) no lugar das 7 antigas, com menu lateral que muda conforme a aba. O Início mostra saudação, clipes para revisar, o que está rodando, canais e atalhos, mais as páginas Atividade e Primeiros passos. A busca no topo filtra os clipes.
+- **Perfis:** cada perfil guarda os próprios ajustes; pastas, programas e desempenho são da máquina e valem para todos. Exportar e importar em `.clipador.json`. Só no PC (sem login na nuvem).
+- **Falta:** a exportação para pasta (item 6 abaixo), a definir. Ainda não testados: restaurar e apagar os descartados, descartar momento.
+
+**Qualquer live e várias ao mesmo tempo (2026-11-17, testado com 4 lives reais):**
+- **Categoria ao longo da live:** cada troca de categoria fica anotada com o horário (tabela `live_games`). Em VOD da Twitch, vem dos capítulos (ex.: just volleyball → Just Chatting → Parasite Eve). Cada momento e cada clipe mostram a categoria do instante em que aconteceram.
+- **Modalidades:** a categoria vira jogo, conversa, IRL, esporte ou criativo. A IA recebe a categoria de cada momento e julga conforme a modalidade: em conversa, a fala é o conteúdo e não é descartada por ser conversa. Nada no pedido da IA fala em GTA.
+- **Segundo plano:** o PC não suspende sozinho enquanto há gravação ou tarefa rodando. Fechar a janela deixa o app na bandeja, gravando. Opção de abrir com o Windows, direto na bandeja (desligada por padrão). Só uma cópia do app: abrir de novo só mostra a janela. Suspender o PC à mão ainda para a gravação.
+- **Whisper com várias lives:** no automático, os núcleos livres são divididos entre as detecções que rodam juntas.
+- **Teste de carga (Ryzen 7 5700X, 16 threads):** 4 lives brasileiras ao mesmo tempo por 32 min (Just Chatting, GTA V, Counter-Strike e IRL), em qualidade Máxima.
+  - Cerca de 2,2 a 2,9 GB por hora por live.
+  - Com 4 detecções rodando juntas, cada pedaço de 5 min foi analisado em 2 a 3 min: a detecção acompanha as lives sem acumular atraso.
+  - A IA manteve o que cada modalidade tem de bom (história no Just Chatting, perrengue no IRL, clutch no CS) e gerou 3 clipes sozinha.
+  - O uso de CPU não foi medido: os contadores do Windows desta máquina voltaram vazios.
+- **Corrigido com o teste:**
+  - Duas detecções da mesma live rodavam juntas quando ela acabava no meio de uma; agora a fila tem chave por live e a segunda espera.
+  - Apagar uma live durante a detecção dava "Permission denied"; agora cancela a detecção e os clipes dela na fila, espera soltar os arquivos e apaga.
+  - Busca de clipes da comunidade quebrava quando a Twitch devolvia "service error"; agora vira um aviso legível.
+- **Limite de disco:** 180 GB para as gravações no PC do usuário, apagando as mais antigas.
 Ideias para depois: IA lendo a transcrição inteira; Whisper na placa (Vulkan).
 Descobertas: a Twitch costura anúncios no vídeo (fMP4 com `EXT-X-DISCONTINUITY`/`EXT-X-MAP` de outro codificador) e o ffmpeg direto corrompe todos os quadros → **Twitch exige Streamlink** (`--twitch-disable-ads`); a Kick grava limpa só com ffmpeg. O chat da Kick mudou para credenciais vindas do servidor (Pusher/Centrifugo) → fica para a 1c.
 
@@ -100,7 +123,7 @@ Descobertas: a Twitch costura anúncios no vídeo (fMP4 com `EXT-X-DISCONTINUITY
 3. Detectores: picos de chat, áudio (volume, risada), fala (Whisper), gatilhos de voz, IA de texto (título, motivo, nota).
 4. Fusão com nota 0–100 explicada; corte com margem antes do pico.
 5. Gerador vertical: layouts (jogo + facecam, tela cheia), legenda palavra a palavra PT/EN, título e hashtags no idioma do canal.
-6. Fila de aprovação e exportação para pasta.
+6. Fila de aprovação ✅ e exportação para pasta (falta).
 
 ### Fase 2 — Publicar e aprender
 - Postagem no YouTube (API oficial, OAuth); TikTok pela API de postagem (contas não auditadas podem ficar limitadas a privado: verificar). Agendamento e limite diário.
@@ -109,7 +132,8 @@ Descobertas: a Twitch costura anúncios no vídeo (fMP4 com `EXT-X-DISCONTINUITY
 
 ### Fase 3 — Diferenciais
 - Clipar ao vivo com atraso de poucos minutos.
-- Perfil de tela do GTA 6: após o lançamento, juntar quadros, marcar eventos (morte, polícia, explosão, perseguição) e treinar ou usar IA de visão.
+- Perfis de tela por jogo (o GTA 6 é o primeiro, depois do lançamento): juntar quadros, marcar eventos (morte, polícia, explosão, gol, vitória) e treinar ou usar IA de visão.
+- Padrões por modalidade: duração, layout e pesos dos detectores próprios para jogo, conversa, IRL, esporte e criativo (a modalidade já é reconhecida pela categoria).
 - Cruzamento entre streamers (mesmo evento em várias lives).
 - Vídeo longo automático com os melhores momentos.
 
@@ -249,23 +273,21 @@ Queixa comum na comunidade: ferramentas travam ou recusam lives longas (o ClipFi
 
 Por ser local, não há limite de plano, envio de arquivo gigante nem fila de servidor compartilhada.
 
-## 6. Visual (referência enviada pelo usuário em 2026-11-16, com liberdade para mudar)
+## 6. Visual (aprovado pelo usuário em 2026-11-17)
 
-A referência é um app escuro em tons de vinho e magenta, com cantos arredondados, cartões com imagem de fundo e brilho rosa. Como cada parte vira uma parte do Clipador:
+Estilo de uma segunda referência enviada pelo usuário (app no estilo do Creative Cloud), com acabamento de site da Apple:
+- **Aparência:** vidro escuro em roxo-acinzentado, botões azuis em pílula, listas translúcidas, cantos de 16 px e bastante respiro.
+- **Topo:** abas Início · Clipes · Canais · Ajustes, busca, sino de atividade e perfil no canto direito.
+- **Menu lateral por aba:**
+  - Início: Visão geral, Atividade, Primeiros passos e atalhos.
+  - Clipes: para revisar, aprovados, descartados e cada live.
+  - Canais: todos, ao vivo, biblioteca e cada canal.
+  - Ajustes: detecção, IA, clipes, gravação, armazenamento, perfil e sistema.
+- **Fonte:** Inter com tamanho óptico, empacotada no app. Substitui a SF Pro, que só pode ser usada em plataformas da Apple.
+- **Logo própria:** `app/resources/logo.svg`, `icon.png` (ícone da janela) e `icon.ico` (para o instalador da fase 4).
+- **Largura:** o conteúdo ocupa até 1680 px em tela cheia e se ajusta com a janela restaurada.
 
-| Referência | No Clipador KTY |
-|---|---|
-| Trilho de ícones redondos à esquerda | Avatares dos streamers vigiados, com anel vermelho pulsando quando estão ao vivo; botão "+" adiciona canal |
-| Menu lateral (Home, Music, Gaming…) | Início · Ao vivo · Momentos · Fila de aprovação · Editor · Postagens · Ajustes |
-| Barra de busca no topo | Busca por momento ("quando ele bateu o carro") e por palavra na transcrição |
-| Banner grande | Destaque: live com mais "hype" agora, ou momento cruzado entre vários streamers |
-| Grade "Featured community" | Momentos mais fortes, em cartões com miniatura, nota 0–100, duração e streamer |
-| Grade "Popular Right Now" | Clipes prontos aguardando aprovação |
-| Painel direito com perfil e lista | Atividade em tempo real: "gravando", "momento encontrado", "clipe pronto", "postado" |
-| Onda de áudio no rodapé esquerdo | Medidor do áudio/chat da live selecionada (vira gráfico de hype) |
-| Barra de usuário no rodapé | Status do gravador, uso de disco, provedor de IA ativo |
-
-Ajustes propostos: paleta própria (vinho e magenta como base, com um acento de "ao vivo"), modo claro opcional, e telas de trabalho (Editor, Fila) mais limpas que a tela inicial, para não cansar no uso diário.
+A primeira referência (2026-11-16: app escuro em vinho e magenta, com trilho de avatares e banner) foi substituída por este visual.
 
 ## 7. Estrutura de pastas (proposta)
 ```

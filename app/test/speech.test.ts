@@ -100,8 +100,11 @@ describe('AI review helpers', () => {
     expect(s).toBe('[1s] olha isso\n[5s] caramba')
   })
   it('prompt carries context, signals, speech and chat', () => {
-    const p = buildReviewPrompt({ channel: 'Fulano', game: 'GTA V', liveTitle: 'RP' }, [{ id: 7, durationS: 40, reasons: ['Chat 3× acima do normal'], speech: '[1s] olha', chat: ['a: KEKW'] }])
+    const p = buildReviewPrompt({ channel: 'Fulano', liveTitle: 'RP' }, [
+      { id: 7, durationS: 40, game: 'Grand Theft Auto V', reasons: ['Chat 3× acima do normal'], speech: '[1s] olha', chat: ['a: KEKW'] }
+    ])
     expect(p).toContain('Canal: Fulano')
+    expect(p).toContain('Categoria: Grand Theft Auto V (jogo)')
     expect(p).toContain('### Momento 7 (40 s)')
     expect(p).toContain('Chat 3× acima do normal')
     expect(p).toContain('- a: KEKW')

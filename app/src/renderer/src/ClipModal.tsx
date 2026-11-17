@@ -440,6 +440,7 @@ export function ClipStudio({ clip, moment, onClose, onEdit }: { clip: ClipRecord
             <div className="min-w-0">
               <div className="mb-1 flex flex-wrap items-center gap-1.5">
                 {clip.score != null && <Badge tone="accent">nota {clip.score}</Badge>}
+                {clip.game && <Badge tone="muted">{clip.game}</Badge>}
                 {clip.tag && <Badge tone="muted">{clip.tag}</Badge>}
                 {clip.auto && <Badge tone="muted">automático</Badge>}
               </div>

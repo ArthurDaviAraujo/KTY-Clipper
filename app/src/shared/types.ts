@@ -68,6 +68,8 @@ export interface ClipRecord {
   score: number | null
   /** Categoria dada pela IA, ou o clipe da comunidade que originou */
   tag: string | null
+  /** Categoria da live (jogo, Just Chatting…) no instante do lance */
+  game: string | null
   progress: number | null
   error: string | null
   path: string | null
@@ -230,6 +232,15 @@ export interface Settings {
     /** Avisos do Windows quando algo termina (VOD importado, momentos, gravação) */
     enabled: boolean
   }
+  /** Funcionamento em segundo plano (deste PC, não do perfil) */
+  background: {
+    /** Não deixar o Windows suspender enquanto grava ou processa */
+    keepAwake: boolean
+    /** Fechar a janela deixa o app na bandeja (continua gravando) */
+    closeToTray: boolean
+    /** Abrir junto com o Windows, direto na bandeja */
+    openAtLogin: boolean
+  }
   /** Caminhos manuais dos programas; vazio = procurar sozinho */
   toolPaths: Partial<Record<ToolId, string>>
 }
@@ -361,6 +372,8 @@ export interface MomentRecord {
   platform: Platform
   liveTitle: string
   liveKind: LiveKind
+  /** Categoria da live (jogo, Just Chatting…) no instante do lance */
+  game: string | null
   /** Posição do lance dentro da live/VOD original (s desde o início da live) */
   peakS: number
   startS: number

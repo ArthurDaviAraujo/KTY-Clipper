@@ -7,6 +7,7 @@ import type { Logger } from './logs'
 import { twitchStatus, TwitchChat, type ChatMessage } from './platforms/twitch'
 import { KickChatPoller, kickStatus } from './platforms/kick'
 import { SegmentRecorder, type RecorderTools } from './recorder'
+import { noteGame } from './games'
 import { channelUrl, parseChannelInput } from '../shared/channels'
 import type { ChannelState, LiveInfo, Platform, RecordingInfo, Settings } from '../shared/types'
 
@@ -29,6 +30,8 @@ interface Recording extends RecordingInfo {
   nextSeq: number
   done: Promise<void>
   kickChat: KickChatPoller | null
+  /** Categoria vista por último (para anotar as trocas durante a live) */
+  game: string | null
 }
 
 interface Runtime {
@@ -299,8 +302,14 @@ export class LiveService extends EventEmitter {
         void this.stopRecording(r.id, 'ended').then(() => this.startRecording(r, rt))
         return
       }
-      if (rec) rec.offlineSince = null
-      else if (!info.live.isRerun || s.recordReruns) this.startRecording(r, rt)
+      if (rec) {
+        rec.offlineSince = null
+        const game = info.live.game ?? null
+        if (game !== rec.game) {
+          if (noteGame(this.db, rec.liveId, now, game)) this.log.info('ao vivo', `${name} trocou de categoria: ${rec.game ?? 'sem categoria'} → ${game ?? 'sem categoria'}.`)
+          rec.game = game
+        }
+      } else if (!info.live.isRerun || s.recordReruns) this.startRecording(r, rt)
     } else if (rec) {
       rec.offlineSince ??= now
       if (now - rec.offlineSince >= s.offlineGraceSeconds * 1000) {
@@ -361,6 +370,8 @@ export class LiveService extends EventEmitter {
       dir = join(this.recordingsDir(), `${r.platform}_${r.login}`, `${stamp(live.startedAt)}_${liveId}`)
       this.db.prepare('UPDATE lives SET dir = ? WHERE id = ?').run(dir, liveId)
     }
+    // Live nova: a categoria vale desde o início; retomada: só anota se mudou enquanto o app estava fechado
+    noteGame(this.db, liveId, prev ? Date.now() : live.startedAt, live.game ?? null)
     try {
       if (!isAbsolute(dir)) throw new Error('caminho relativo')
       // Se a pasta de gravações mudou (ex.: para o D:), a live retomada continua na pasta nova
@@ -393,7 +404,8 @@ export class LiveService extends EventEmitter {
       offlineSince: null,
       nextSeq,
       done: Promise.resolve(),
-      kickChat: null
+      kickChat: null,
+      game: live.game ?? null
     }
     rt.recording = rec
     if (r.platform === 'twitch' && this.settings().recorder.recordChat) {

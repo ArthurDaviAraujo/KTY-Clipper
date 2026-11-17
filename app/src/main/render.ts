@@ -11,6 +11,7 @@ import { cpuFallback, encoderArgs, fitEncoder } from './encode'
 import { pickEncoder } from '../shared/encoders'
 import { formatTimecode } from '../shared/vod'
 import { channelUrl } from '../shared/channels'
+import { gameAt } from './games'
 import {
   buildClipAss,
   cleanRect,
@@ -85,6 +86,7 @@ interface ClipRow {
   m_score: number | null
   m_ai: string | null
   m_signals: string | null
+  m_peak: number | null
 }
 
 interface AiJson {
@@ -534,7 +536,7 @@ export class ClipService extends EventEmitter {
     const where = id != null ? 'WHERE c.id = ?' : liveId != null ? 'WHERE c.live_id = ?' : ''
     const rows = this.db
       .prepare(
-        `SELECT c.*, j.progress AS progress, m.score AS m_score, m.ai AS m_ai, m.signals AS m_signals
+        `SELECT c.*, j.progress AS progress, m.score AS m_score, m.ai AS m_ai, m.signals AS m_signals, m.peak_utc AS m_peak
          FROM clips c LEFT JOIN jobs j ON j.id = c.job_id LEFT JOIN moments m ON m.id = c.moment_id ${where} ORDER BY c.id DESC LIMIT 500`
       )
       .all(...(id != null ? [id] : liveId != null ? [liveId] : [])) as unknown as ClipRow[]
@@ -552,6 +554,7 @@ export class ClipService extends EventEmitter {
       review: (['pending', 'approved', 'rejected'].includes(r.review) ? r.review : 'pending') as ClipReview,
       score: r.m_score,
       tag: clipTag(r.m_ai, r.m_signals),
+      game: r.live_id != null && r.m_peak != null ? gameAt(this.db, r.live_id, r.m_peak) : null,
       progress: r.status === 'rendering' ? (r.progress ?? 0) : null,
       error: r.error,
       path: r.path && existsSync(r.path) ? r.path : null,

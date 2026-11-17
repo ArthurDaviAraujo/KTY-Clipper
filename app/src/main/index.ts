@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, net, Notification, protocol, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, powerSaveBlocker, protocol, shell, Tray } from 'electron'
 import { pathToFileURL } from 'url'
 import { Readable } from 'stream'
 import { setHttpFetch } from './platforms/http'
@@ -51,6 +51,74 @@ let win: BrowserWindow | null = null
 
 const send = (channel: string, payload: unknown) => {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+}
+
+/** Uma cópia só do app: duas gravariam as mesmas lives no mesmo banco. Abrir de novo só mostra a janela. */
+const singleInstance = app.requestSingleInstanceLock()
+if (!singleInstance) app.quit()
+app.on('second-instance', () => showWindow())
+
+/** Aberto pelo Windows ao ligar o PC: começa escondido na bandeja. */
+const startHidden = process.argv.includes('--hidden')
+
+function showWindow(): void {
+  if (!app.isReady()) return
+  if (!win || win.isDestroyed()) return createWindow(true)
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+// ---------- segundo plano: bandeja, PC acordado e abrir com o Windows ----------
+
+let tray: Tray | null = null
+let trayHintShown = false
+
+function setupTray(): void {
+  const icon = nativeImage.createFromPath(join(app.getAppPath(), 'resources', 'icon.png')).resize({ width: 32, height: 32, quality: 'best' })
+  tray = new Tray(icon)
+  tray.on('click', () => showWindow())
+  refreshTray()
+}
+
+function refreshTray(): void {
+  if (!tray) return
+  const n = live?.activeLiveIds().size ?? 0
+  const status = n ? `Gravando ${n} live${n > 1 ? 's' : ''}` : 'Nenhuma gravação agora'
+  tray.setToolTip(`Clipador KTY · ${status}`)
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Abrir Clipador KTY', click: () => showWindow() },
+      { label: status, enabled: false },
+      { type: 'separator' },
+      { label: 'Sair (para de gravar)', click: () => app.quit() }
+    ])
+  )
+}
+
+/** Impede o Windows de suspender enquanto há live gravando ou tarefa rodando (a tela ainda pode apagar). */
+let awakeId: number | null = null
+function updateKeepAwake(): void {
+  if (!settings || !live || !queue) return
+  const recording = live.activeLiveIds().size
+  const want = settings.background.keepAwake && (recording > 0 || queue.runningTotal() > 0)
+  if (want && awakeId == null) {
+    awakeId = powerSaveBlocker.start('prevent-app-suspension')
+    logger.info('energia', 'O PC não vai suspender enquanto houver gravação ou tarefa rodando.')
+  } else if (!want && awakeId != null) {
+    powerSaveBlocker.stop(awakeId)
+    awakeId = null
+    logger.info('energia', 'Nada gravando nem rodando: o PC pode suspender de novo.')
+  }
+}
+
+/** Atalho de inicialização do Windows (só mexe no registro quando a opção foi ligada alguma vez). */
+function applyLoginItem(): void {
+  const args = app.isPackaged ? ['--hidden'] : [app.getAppPath(), '--hidden']
+  const opts = { path: process.execPath, args }
+  const on = settings.background.openAtLogin
+  if (!on && !app.getLoginItemSettings(opts).openAtLogin) return
+  app.setLoginItemSettings({ ...opts, openAtLogin: on })
 }
 
 /** Ajustes do perfil ativo (os de antes dos perfis ficam como base do primeiro). */
@@ -119,12 +187,7 @@ function getDisk(): DiskInfo {
 function notify(title: string, body: string): void {
   if (!settings.notifications.enabled || !Notification.isSupported()) return
   const n = new Notification({ title, body, silent: false })
-  n.on('click', () => {
-    if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
-  })
+  n.on('click', () => showWindow())
   n.show()
 }
 
@@ -232,6 +295,7 @@ function registerIpc(): void {
   ipcMain.handle('settings:update', (_e, patch: DeepPartial<Settings>) => {
     const before = settings.performance.mode
     const prevStorage = settings.storage
+    const prevBackground = settings.background
     const merged = mergeSettings(settings, patch)
     // Pastas só aceitam caminho absoluto (ou vazio = padrão); qualquer outra coisa mantém a anterior
     for (const k of ['recordingsDir', 'clipsDir'] as const) {
@@ -246,6 +310,11 @@ function registerIpc(): void {
     if (next.storage.recordingsDir !== prevStorage.recordingsDir)
       logger.info('disco', `Novas gravações vão para ${recordingsRoot(next, dataDir)}. As antigas continuam onde estavam.`)
     if (next.storage.maxRecordingsGb !== prevStorage.maxRecordingsGb || next.storage.whenFull !== prevStorage.whenFull) void enforceStorage()
+    if (next.background.openAtLogin !== prevBackground.openAtLogin) {
+      applyLoginItem()
+      logger.info('ajustes', next.background.openAtLogin ? 'O Clipador vai abrir junto com o Windows, na bandeja.' : 'O Clipador não abre mais junto com o Windows.')
+    }
+    if (next.background.keepAwake !== prevBackground.keepAwake) updateKeepAwake()
     return next
   })
   ipcMain.handle('settings:reset', () => {
@@ -375,7 +444,7 @@ function registerIpc(): void {
   })
 }
 
-function createWindow(): void {
+function createWindow(forceShow = false): void {
   win = new BrowserWindow({
     width: 1360,
     height: 880,
@@ -394,7 +463,19 @@ function createWindow(): void {
       contextIsolation: true
     }
   })
-  win.once('ready-to-show', () => win?.show())
+  win.once('ready-to-show', () => {
+    if (forceShow || !startHidden) win?.show()
+  })
+  // Fechar a janela deixa o app na bandeja, gravando; "Sair" no ícone da bandeja fecha de vez
+  win.on('close', (e) => {
+    if (quitting || !settings?.background.closeToTray) return
+    e.preventDefault()
+    win?.hide()
+    if (!trayHintShown) {
+      trayHintShown = true
+      notify('O Clipador continua aberto', 'Segue gravando na bandeja, perto do relógio. Para fechar de vez: botão direito no ícone > Sair.')
+    }
+  })
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
@@ -407,6 +488,8 @@ function createWindow(): void {
 app.setAppUserModelId('dev.clipador.kty')
 
 app.whenReady().then(() => {
+  // Outra cópia já está aberta: ela recebe o "second-instance" e mostra a janela
+  if (!singleInstance) return
   setHttpFetch((input, init) => net.fetch(input as string, init))
   db = openDb(dbPath)
   logger = new Logger(db)
@@ -431,7 +514,10 @@ app.whenReady().then(() => {
   live.on('channels', (c) => {
     send('channels', c)
     send('lives', null)
+    refreshTray()
+    updateKeepAwake()
   })
+  queue.on('job', () => updateKeepAwake())
   // Confere o limite de espaço a cada pedaço novo
   live.on('segment', () => void enforceStorage())
   live.on('lives', () => send('lives', null))
@@ -538,6 +624,9 @@ app.whenReady().then(() => {
   registerJobs()
   registerIpc()
   createWindow()
+  setupTray()
+  applyLoginItem()
+  if (startHidden) logger.info('app', 'Aberto junto com o Windows, na bandeja.')
 
   logger.info('app', `Clipador KTY ${app.getVersion()} iniciado. Dados em ${dataDir}.`)
   const missing = getTools(settings).filter((t) => t.required && !t.path)

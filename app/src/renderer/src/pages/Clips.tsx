@@ -61,8 +61,9 @@ export default function ClipsPage({
   const live = liveId === 'all' ? null : (state.lives.find((l) => l.id === liveId) ?? null)
   const scoped = state.clips.filter((c) => liveId === 'all' || c.liveId === liveId)
   const withClip = new Set(scoped.map((c) => c.momentId))
-  const matchClip = (c: ClipRecord) => !q || norm([c.title, c.titleEn, c.channelName, c.tag ?? '', ...c.hashtags].join(' ')).includes(q)
-  const matchMoment = (m: MomentRecord) => !q || norm([m.ai?.titlePt ?? '', m.ai?.titleEn ?? '', m.channelName, m.speech, ...m.reasons].join(' ')).includes(q)
+  const matchClip = (c: ClipRecord) => !q || norm([c.title, c.titleEn, c.channelName, c.tag ?? '', c.game ?? '', ...c.hashtags].join(' ')).includes(q)
+  const matchMoment = (m: MomentRecord) =>
+    !q || norm([m.ai?.titlePt ?? '', m.ai?.titleEn ?? '', m.channelName, m.game ?? '', m.speech, ...m.reasons].join(' ')).includes(q)
   const order = <T extends { score: number | null; createdAt?: number; peakS?: number; id: number }>(a: T, b: T) =>
     sort === 'best' ? (b.score ?? 0) - (a.score ?? 0) : b.id - a.id
 
@@ -226,6 +227,7 @@ function ClipCard({ clip: c, job, onOpen, onRetry }: { clip: ClipRecord; job: Jo
           <p className="line-clamp-2 text-[13px] font-semibold leading-snug">{c.title}</p>
           <p className="truncate text-[11px] text-muted">
             {c.channelName}
+            {c.game ? ` · ${c.game}` : ''}
             {c.tag ? ` · ${c.tag}` : ''}
           </p>
         </div>
@@ -325,6 +327,7 @@ function MomentRow({ m, showLive, onMake }: { m: MomentRecord; showLive: boolean
         <p className={cx('line-clamp-2 text-[13px] font-semibold leading-snug', m.ai && !m.ai.keep && 'text-muted')}>{title}</p>
         <p className="truncate text-[11px] text-muted">
           {showLive ? `${m.channelName} · ` : ''}
+          {m.game ? `${m.game} · ` : ''}
           {m.clip ? `clipado · ${m.clip.views} views` : m.voice ? `pediu clipe: “${m.voice.phrase}”` : m.ai ? (m.ai.keep ? m.ai.category : 'IA descartou') : m.reasons[0]}
         </p>
         <div className="mt-auto flex items-center gap-1.5 pt-2">

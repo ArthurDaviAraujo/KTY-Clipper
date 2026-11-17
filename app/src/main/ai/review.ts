@@ -3,12 +3,16 @@
  * Funções puras: o pedido HTTP fica em gemini.ts.
  */
 
-export const CATEGORIES = ['engraçado', 'ação', 'falha', 'jogada', 'reação', 'história', 'informação', 'fofo', 'outro'] as const
+import { MODALITIES, modalityOf } from '../../shared/modality'
+
+export const CATEGORIES = ['engraçado', 'ação', 'falha', 'jogada', 'reação', 'história', 'polêmica', 'talento', 'informação', 'fofo', 'outro'] as const
 export type Category = (typeof CATEGORIES)[number]
 
 export interface MomentForAi {
   id: number
   durationS: number
+  /** Categoria da live no instante do momento (o streamer pode trocar de jogo no meio) */
+  game: string | null
   reasons: string[]
   /** Fala do streamer no trecho, com segundos relativos ao início do clipe: "[3s] texto" */
   speech: string
@@ -50,26 +54,40 @@ export const REVIEW_SCHEMA = {
   required: ['moments']
 }
 
-export const REVIEW_SYSTEM = `Você é editor de clipes curtos (YouTube Shorts e TikTok) de lives de jogos, principalmente GTA.
+export const REVIEW_SYSTEM = `Você é editor de clipes curtos (YouTube Shorts e TikTok) de lives da Twitch e da Kick de todo tipo:
+jogos de qualquer gênero, conversa (Just Chatting, podcast, react), IRL, esporte, música e arte.
 Recebe momentos candidatos encontrados automaticamente por picos de chat, áudio ou pedido do streamer.
-IMPORTANTE: você NÃO vê o vídeo, só a fala e o chat. Em jogo muita coisa boa é visual (tiro, perseguição, entrada, falha).
-Se o momento foi clipado por espectadores ou o streamer pediu clipe, isso é forte indício de que algo aconteceu na tela:
+IMPORTANTE: você NÃO vê o vídeo, só a fala e o chat.
+Cada momento traz a categoria da live naquele instante e a modalidade dela. Julgue conforme a modalidade:
+- jogo: muita coisa boa é visual (jogada, falha, susto, lance absurdo); reação forte na fala e no chat indica que algo aconteceu na tela.
+- conversa: a fala É o conteúdo. Mantenha história engraçada, opinião forte, revelação, discussão, piada que funciona sozinha; descarte papo morno ou que depende de contexto.
+- IRL: algo inesperado na rua ou no evento, interação com pessoas, susto, situação absurda.
+- esporte: lance decisivo, gol, virada, reação do streamer e do chat.
+- criativo: performance marcante, erro engraçado, reação forte do chat.
+Se o momento foi clipado por espectadores ou o streamer pediu clipe, isso é forte indício de que algo aconteceu:
 mantenha (keep=true) a menos que a fala e o chat mostrem claramente que não houve nada, e capriche no título a partir do que dá para entender.
 Para cada um decida se vira um bom clipe sozinho, sem contexto da live:
-- keep=false para conversa comum, tela de espera, propaganda, leitura de doação sem graça, ou quando não dá para entender o que aconteceu.
-- score de 0 a 100: potencial de prender quem nunca viu o canal (gancho nos primeiros segundos, reação forte, humor, lance absurdo).
+- keep=false para trecho em que nada acontece, tela de espera, propaganda, leitura de doação sem graça, ou quando não dá para entender o que aconteceu. Em live de conversa, conversa boa não é motivo para descartar.
+- score de 0 a 100: potencial de prender quem nunca viu o canal (gancho nos primeiros segundos, reação forte, humor, lance absurdo, frase marcante).
 - title_pt: título curto em português do Brasil (até 60 caracteres), chamativo mas fiel ao que aconteceu, sem inventar.
 - title_en: o mesmo título em inglês.
 - reason: uma frase em português explicando a decisão.
-- hashtags: 3 a 5, sem o #, ligadas ao jogo e ao tipo de momento.
+- hashtags: 3 a 5, sem o #, ligadas ao jogo ou assunto e ao tipo de momento.
 A transcrição é automática e pode ter erros; o chat pode estar em outro idioma. Responda só com o JSON pedido.`
 
-export function buildReviewPrompt(ctx: { channel: string; game: string | null; liveTitle: string }, moments: MomentForAi[]): string {
-  const head = `Canal: ${ctx.channel}\nJogo: ${ctx.game ?? 'desconhecido'}\nTítulo da live: ${ctx.liveTitle || '(sem título)'}\n`
+/** "Just Chatting (conversa)"; sem categoria: "desconhecida (julgue pelo conteúdo)". */
+export function categoryLine(game: string | null): string {
+  const m = modalityOf(game)
+  return m ? `${game} (${MODALITIES[m].label})` : 'desconhecida (julgue pelo conteúdo)'
+}
+
+export function buildReviewPrompt(ctx: { channel: string; liveTitle: string }, moments: MomentForAi[]): string {
+  const head = `Canal: ${ctx.channel}\nTítulo da live: ${ctx.liveTitle || '(sem título)'}\n`
   const body = moments
     .map(
       (m) =>
         `### Momento ${m.id} (${Math.round(m.durationS)} s)\n` +
+        `Categoria: ${categoryLine(m.game)}\n` +
         `Sinais: ${m.reasons.join('; ') || 'nenhum'}\n` +
         `Fala do streamer:\n${m.speech.trim() || '(sem fala reconhecida)'}\n` +
         `Chat logo depois:\n${m.chat.length ? m.chat.map((c) => `- ${c}`).join('\n') : '(sem chat)'}`
@@ -101,7 +119,7 @@ export function speechWithTimes(words: { t: number; text: string }[], startMs: n
  * Nota final.
  * - Sem sinal humano: 40% detectores + 60% IA; descartado pela IA fica com no máximo 30.
  * - Com sinal humano (clipe da comunidade ou pedido do streamer): 70% detectores + 30% IA, sem veto.
- *   A IA só lê fala e chat, não vê a tela; em GTA muito do que é bom é visual (testado em 2026-11-16:
+ *   A IA só lê fala e chat, não vê a tela; em jogo muito do que é bom é visual (testado em 2026-11-16 com GTA:
  *   a IA descartou todos os 10 trechos que a comunidade clipou, inclusive um de 101 visualizações).
  */
 export function combineScore(detector: number, ai: AiVerdict, humanSignal = false): number {

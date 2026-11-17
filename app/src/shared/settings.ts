@@ -7,7 +7,7 @@ export const DETECTORS: { id: DetectorId; label: string; description: string; ph
   { id: 'voiceTrigger', label: 'Comando de voz', description: 'Quando o streamer diz "clip that" ou "clipa isso".', phase: 1 },
   { id: 'communityClips', label: 'Clipes da comunidade', description: 'Trechos que os espectadores já clicaram para clipar na Twitch e na Kick.', phase: 1 },
   { id: 'aiText', label: 'IA de texto', description: 'Lê trechos de fala e chat e dá título, nota e motivo.', phase: 1 },
-  { id: 'screen', label: 'Tela do jogo', description: 'Reconhece eventos do GTA 6 na imagem (morte, polícia, explosão).', phase: 3 },
+  { id: 'screen', label: 'Tela do jogo', description: 'Reconhece eventos na imagem com um perfil por jogo (morte, gol, explosão, vitória).', phase: 3 },
   { id: 'crossStreamer', label: 'Vários streamers', description: 'O mesmo momento em várias lives ganha prioridade.', phase: 3 }
 ]
 
@@ -48,6 +48,7 @@ export function defaultSettings(): Settings {
     storage: { recordingsDir: '', clipsDir: '', maxRecordingsGb: 0, whenFull: 'deleteOldest', warnFreeGb: 50, deleteUnusedSegments: false },
     publishing: { autoPost: false },
     notifications: { enabled: true },
+    background: { keepAwake: true, closeToTray: true, openAtLogin: false },
     toolPaths: {}
   }
 }
@@ -84,7 +85,7 @@ function mergeDeep(base: Record<string, unknown>, patch: unknown): Record<string
 }
 
 /**
- * Ajustes que são do PC, não do perfil: pastas, programas, desempenho, codificador e núcleos do Whisper.
+ * Ajustes que são do PC, não do perfil: pastas, programas, desempenho, segundo plano, codificador e núcleos do Whisper.
  * Trocar de perfil ou importar predefinições de outro PC nunca muda estes.
  */
 export function withMachine(target: Settings, machine: Settings): Settings {
@@ -92,6 +93,7 @@ export function withMachine(target: Settings, machine: Settings): Settings {
   out.storage = structuredClone(machine.storage)
   out.toolPaths = { ...machine.toolPaths }
   out.performance = { ...machine.performance }
+  out.background = { ...machine.background }
   out.quality.encoder = machine.quality.encoder
   out.speech.threads = machine.speech.threads
   out.dataDir = machine.dataDir
@@ -104,6 +106,7 @@ export function portableSettings(s: Settings): DeepPartial<Settings> {
   delete out.storage
   delete out.toolPaths
   delete out.performance
+  delete out.background
   delete out.dataDir
   if (out.quality) delete out.quality.encoder
   if (out.speech) delete out.speech.threads

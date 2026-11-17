@@ -39,6 +39,32 @@ describe('JobQueue', () => {
     expect(peak).toBe(1)
   })
 
+  it('never runs two jobs with the same key together, but runs different keys in parallel', async () => {
+    const q = new JobQueue(openDb(':memory:'), () => ({ gpu: 1, cpu: 4, io: 2, net: 2 }))
+    const active = new Map<number, number>()
+    const peak = new Map<number, number>()
+    let peakAll = 0
+    q.register(
+      'detect',
+      'cpu',
+      async (p) => {
+        const live = (p as { liveId: number }).liveId
+        active.set(live, (active.get(live) ?? 0) + 1)
+        peak.set(live, Math.max(peak.get(live) ?? 0, active.get(live)!))
+        peakAll = Math.max(peakAll, [...active.values()].reduce((a, b) => a + b, 0))
+        await new Promise((r) => setTimeout(r, 30))
+        active.set(live, active.get(live)! - 1)
+      },
+      (p) => String((p as { liveId: number }).liveId)
+    )
+    q.start()
+    const ids = [1, 1, 2, 2].map((liveId) => q.enqueue('detect', 'Detectar', { liveId }).id)
+    await waitFor(() => ids.every((id) => q.get(id)?.status === 'done'))
+    expect(peak.get(1)).toBe(1)
+    expect(peak.get(2)).toBe(1)
+    expect(peakAll).toBe(2)
+  })
+
   it('retries a failing job until it succeeds', async () => {
     const q = new JobQueue(openDb(':memory:'), limits, Date.now, () => 5)
     let calls = 0

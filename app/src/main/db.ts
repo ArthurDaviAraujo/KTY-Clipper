@@ -199,6 +199,16 @@ const MIGRATIONS: string[] = [
     settings   TEXT,
     created_at INTEGER NOT NULL
   );
+  `,
+  // 11 — categoria (jogo) ao longo da live: o streamer pode trocar de Just Chatting para um jogo no meio
+  `
+  CREATE TABLE live_games (
+    live_id  INTEGER NOT NULL REFERENCES lives(id) ON DELETE CASCADE,
+    from_utc INTEGER NOT NULL,
+    game     TEXT,
+    PRIMARY KEY (live_id, from_utc)
+  );
+  INSERT INTO live_games(live_id, from_utc, game) SELECT id, started_at, game FROM lives WHERE started_at IS NOT NULL;
   `
 ]
 

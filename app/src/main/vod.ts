@@ -6,7 +6,8 @@ import type { JobContext, JobQueue } from './jobs'
 import type { Logger } from './logs'
 import { SegmentRecorder, resolveHls, type RecorderTools } from './recorder'
 import { KICK_WINDOW_MS, kickChatPage, kickStatus, kickVodInfo, resolveKickVariant } from './platforms/kick'
-import { nextCommentOffset, twitchVodComments, twitchVodInfo, type VodComment } from './platforms/twitch'
+import { nextCommentOffset, twitchVodChapters, twitchVodComments, twitchVodInfo, type VodComment } from './platforms/twitch'
+import { noteGame } from './games'
 import { parseVodInput } from '../shared/vod'
 import type { LiveRecord, LiveStatus, Platform, Settings } from '../shared/types'
 
@@ -190,6 +191,11 @@ export class VodService extends EventEmitter {
     ).id
     const dir = join(this.recordingsDir(), `${ref.platform}_${channel.login}`, `vod_${stamp(startedAt)}_${liveId}`)
     this.db.prepare('UPDATE lives SET dir = ?, broadcast_id = ? WHERE id = ?').run(dir, broadcastId, liveId)
+    // Categoria ao longo do VOD: na Twitch, pelos capítulos (cada troca de jogo); sem capítulos, a do VOD vale para tudo
+    const chapters = ref.platform === 'twitch' ? await twitchVodChapters(ref.id).catch(() => []) : []
+    if (!chapters.length || chapters[0].positionMs > 0) noteGame(this.db, liveId, startedAt, game)
+    for (const c of chapters) noteGame(this.db, liveId, startedAt + c.positionMs, c.game)
+    if (chapters.length > 1) this.log.info('importar', `VOD com ${chapters.length} categorias: ${chapters.map((c) => c.game ?? '?').join(' → ')}.`)
 
     this.queue.enqueue('vod:import', `Importar VOD: ${channel.displayName}`, { liveId })
     this.log.info(
@@ -430,10 +436,27 @@ export class VodService extends EventEmitter {
     const r = this.row(liveId)
     if (!r) return
     if (r.kind === 'live' && r.status === 'recording') throw new Error('Esta live está sendo gravada. Pare a gravação em "Ao vivo" antes de apagar.')
-    const jobs = this.activeJobs(liveId)
-    for (const id of jobs) this.queue.cancel(id)
-    // Espera a tarefa cancelada soltar os arquivos
-    for (let i = 0; i < 50 && this.activeJobs(liveId).some((id) => this.queue.get(id)?.status === 'running'); i++) await new Promise((res) => setTimeout(res, 100))
+    // Cancela tudo o que mexe nesta live (importar, chat e detecção) e espera soltar os arquivos;
+    // sem isso, apagar durante a detecção dá "Permission denied" num pedaço aberto pelo Whisper (visto em 2026-11-17)
+    const jobsOf = () =>
+      (
+        this.db
+          .prepare(`SELECT id, status FROM jobs WHERE status IN ('running', 'queued', 'failed') AND finished_at IS NULL AND json_extract(payload, '$.liveId') = ?`)
+          .all(liveId) as { id: number; status: string }[]
+      )
+    for (const j of jobsOf()) this.queue.cancel(j.id)
+    // Clipes desta live ainda na fila também saem (sem a gravação, falhariam com "trecho vazio")
+    const pendingClips = this.db.prepare(`SELECT id, job_id FROM clips WHERE live_id = ? AND status IN ('queued', 'rendering')`).all(liveId) as {
+      id: number
+      job_id: number | null
+    }[]
+    const clipJobs = pendingClips.map((c) => c.job_id).filter((id): id is number => id != null)
+    for (const id of clipJobs) this.queue.cancel(id)
+    if (pendingClips.length) this.db.prepare(`DELETE FROM clips WHERE live_id = ? AND status IN ('queued', 'rendering')`).run(liveId)
+    const busy = () => jobsOf().some((j) => j.status === 'running') || clipJobs.some((id) => this.queue.get(id)?.status === 'running')
+    for (let i = 0; i < 100 && busy(); i++) await new Promise((res) => setTimeout(res, 100))
+    // O Windows pode demorar um instante para liberar o arquivo depois que o processo fecha
+    await new Promise((res) => setTimeout(res, 300))
 
     const paths = (this.db.prepare('SELECT path FROM segments WHERE live_id = ?').all(liveId) as { path: string }[]).map((s) => s.path)
     const dirs = new Set<string>(r.dir ? [r.dir] : [])

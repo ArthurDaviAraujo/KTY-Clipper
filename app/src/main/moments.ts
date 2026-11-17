@@ -11,6 +11,7 @@ import { findVoiceTriggers, transcribe, type SpeechTools } from './speech'
 import { BUCKET_S, classifyMessage, detectMoments, hypeSeries, type Bucket, type ClipSignal } from './detector'
 import { clipBelongs, clipWindow, kickClips, twitchClipPeriod, twitchClips } from './platforms/clips'
 import { geminiJson, QuotaError } from './ai/gemini'
+import { gameAt } from './games'
 import { buildReviewPrompt, combineScore, REVIEW_SCHEMA, REVIEW_SYSTEM, speechWithTimes, type AiVerdict, type MomentForAi } from './ai/review'
 import type { MomentRecord, Settings, TimelinePoint } from '../shared/types'
 
@@ -62,7 +63,13 @@ export class MomentsService extends EventEmitter {
 
   constructor(private d: MomentsDeps) {
     super()
-    d.queue.register('detect:live', 'cpu', (p, ctx) => this.run((p as { liveId: number }).liveId, ctx))
+    // Uma detecção por live de cada vez: duas juntas transcreveriam os mesmos pedaços e brigariam pelos momentos no banco
+    d.queue.register(
+      'detect:live',
+      'cpu',
+      (p, ctx) => this.run((p as { liveId: number }).liveId, ctx),
+      (p) => String((p as { liveId?: number } | null)?.liveId ?? '')
+    )
   }
 
   private get db() {
@@ -89,11 +96,16 @@ export class MomentsService extends EventEmitter {
     if (Date.now() - last >= minutes * 60_000) this.enqueue(liveId, 'gravação em andamento')
   }
 
+  /**
+   * Núcleos para o Whisper. No automático, os núcleos livres são divididos entre as detecções que
+   * rodam juntas (várias lives ao mesmo tempo): mais threads do que núcleos deixa todas mais lentas.
+   */
   private threads(): number {
     const s = this.d.settings()
     if (s.speech.threads) return s.speech.threads
     const n = cpus().length
-    return s.performance.mode === 'eco' ? Math.max(2, Math.floor(n / 4)) : Math.max(2, n - 2)
+    if (s.performance.mode === 'eco') return Math.max(2, Math.floor(n / 4))
+    return Math.max(2, Math.floor((n - 2) / Math.max(1, this.d.queue.runningBy('cpu'))))
   }
 
   private async run(liveId: number, ctx: JobContext): Promise<unknown> {
@@ -248,14 +260,21 @@ export class MomentsService extends EventEmitter {
       const items: MomentForAi[] = batch.map((r) => {
         const sig = JSON.parse(r.signals)
         const w = this.words(live.id, r.start_utc - 5000, r.end_utc + 5000)
-        return { id: r.id, durationS: (r.end_utc - r.start_utc) / 1000, reasons: sig.reasons ?? [], speech: speechWithTimes(w, r.start_utc), chat: sig.samples ?? [] }
+        return {
+          id: r.id,
+          durationS: (r.end_utc - r.start_utc) / 1000,
+          game: gameAt(this.db, live.id, r.peak_utc),
+          reasons: sig.reasons ?? [],
+          speech: speechWithTimes(w, r.start_utc),
+          chat: sig.samples ?? []
+        }
       })
       try {
         const res = await geminiJson<{ moments: AiVerdict[] }>(
           g.key,
           g.model,
           REVIEW_SYSTEM,
-          buildReviewPrompt({ channel: live.channel, game: live.game, liveTitle: live.title ?? '' }, items),
+          buildReviewPrompt({ channel: live.channel, liveTitle: live.title ?? '' }, items),
           REVIEW_SCHEMA,
           ctx.signal
         )
@@ -396,6 +415,7 @@ export class MomentsService extends EventEmitter {
         platform: m.platform,
         liveTitle: m.live_title ?? '',
         liveKind: m.kind,
+        game: gameAt(this.db, m.live_id, m.peak_utc),
         peakS: (m.peak_utc - m.started_at) / 1000,
         startS: (m.start_utc - m.started_at) / 1000,
         endS: (m.end_utc - m.started_at) / 1000,

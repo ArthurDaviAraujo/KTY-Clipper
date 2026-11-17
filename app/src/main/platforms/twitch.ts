@@ -98,6 +98,22 @@ export async function twitchVodInfo(id: string): Promise<TwitchVodInfo | null> {
   }
 }
 
+/**
+ * Capítulos do VOD: cada troca de categoria com o ponto do vídeo em que começou.
+ * VOD sem capítulos (uma categoria só) volta vazio.
+ */
+export async function twitchVodChapters(id: string): Promise<{ positionMs: number; game: string | null }[]> {
+  const query = `query { video(id: ${JSON.stringify(id)}) { moments(first: 100, momentRequestType: VIDEO_CHAPTER_MARKERS) { edges { node { positionMilliseconds type description details { ... on GameChangeMomentDetails { game { name } } } } } } } }`
+  const r = await httpFetch(GQL_URL, { method: 'POST', headers: { 'Client-ID': WEB_CLIENT_ID, 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) })
+  if (!r.ok) throw new Error(`Twitch respondeu ${r.status}`)
+  const edges = ((await r.json()) as { data?: { video: { moments?: { edges?: { node: Record<string, any> }[] } } | null } }).data?.video?.moments?.edges ?? []
+  return edges
+    .map((e) => e.node)
+    .filter((n) => n?.type === 'GAME_CHANGE' && Number.isFinite(n.positionMilliseconds))
+    .map((n) => ({ positionMs: n.positionMilliseconds as number, game: (n.details?.game?.name ?? n.description ?? null) as string | null }))
+    .sort((a, b) => a.positionMs - b.positionMs)
+}
+
 export interface VodComment {
   id: string
   /** Segundos desde o início do VOD */

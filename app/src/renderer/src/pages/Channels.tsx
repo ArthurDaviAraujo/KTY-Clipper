@@ -48,7 +48,7 @@ export default function ChannelsPage({ state, go, view, setView }: { state: AppS
           <RowList>
             {list.length === 0 && (
               <Row>
-                <span className="text-[13px] text-muted">{view === 'live' ? 'Ninguém ao vivo agora.' : 'Adicione os streamers de GTA que você quer clipar.'}</span>
+                <span className="text-[13px] text-muted">{view === 'live' ? 'Ninguém ao vivo agora.' : 'Adicione os streamers que você quer clipar: qualquer jogo, conversa, IRL ou esporte.'}</span>
               </Row>
             )}
             {list.map((c) => (

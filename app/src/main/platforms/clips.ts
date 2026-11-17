@@ -36,8 +36,11 @@ export async function twitchClips(login: string, period: ReturnType<typeof twitc
   const query = `query { user(login: ${JSON.stringify(login)}) { clips(first: 100, criteria: { period: ${period}, sort: VIEWS_DESC }) { edges { node { id title viewCount createdAt durationSeconds videoOffsetSeconds url video { id } broadcast { id } } } } } }`
   const r = await httpFetch(GQL_URL, { method: 'POST', headers: { 'Client-ID': WEB_CLIENT_ID, 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) })
   if (!r.ok) throw new Error(`Twitch respondeu ${r.status}`)
-  const j = (await r.json()) as { data?: { user: { clips: { edges: { node: Record<string, any> }[] } } | null } }
-  return (j.data?.user?.clips.edges ?? []).map(({ node: n }) => ({
+  // A Twitch às vezes devolve "clips: null" com "service error" (visto em 2026-11-17 num canal IRL): vira erro legível
+  const j = (await r.json()) as { data?: { user: { clips: { edges: { node: Record<string, any> }[] } | null } | null }; errors?: { message: string }[] }
+  const clips = j.data?.user?.clips
+  if (!clips && j.errors?.length) throw new Error(`Twitch: ${j.errors[0].message}`)
+  return (clips?.edges ?? []).map(({ node: n }) => ({
     id: String(n.id),
     title: n.title ?? '',
     views: n.viewCount ?? 0,
