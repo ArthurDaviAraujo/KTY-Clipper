@@ -74,7 +74,7 @@ export default function ClipsPage({
   const open = studio != null ? (state.clips.find((c) => c.id === studio) ?? null) : null
 
   return (
-    <div className="mx-auto max-w-6xl space-y-5">
+    <div className="mx-auto w-full max-w-[1680px] space-y-8">
       <PageHeader
         title={live ? `${live.channelName} · ${new Date(live.startedAt).toLocaleDateString('pt-BR')}` : 'Todos os clipes'}
         subtitle={live ? live.title : TABS[tab].label}
@@ -109,7 +109,7 @@ export default function ClipsPage({
       {tab !== 'moments' && (
         <>
           {shown.length === 0 && <Empty text={q ? 'Nada encontrado nesta aba.' : TABS[tab].empty} />}
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-4">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-5 2xl:grid-cols-[repeat(auto-fill,minmax(230px,1fr))]">
             {shown.map((c) => (
               <ClipCard key={c.id} clip={c} job={c.jobId != null ? (jobById.get(c.jobId) ?? null) : null} onOpen={() => setStudio(c.id)} onRetry={() => c.momentId != null && setMaking(c.momentId)} />
             ))}

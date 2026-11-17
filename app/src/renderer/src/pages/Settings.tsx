@@ -244,7 +244,7 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
   const auto = hardware ? pickEncoder(hardware.encoders, '', s.quality.preset) : null
 
   return (
-    <div className="mx-auto max-w-4xl space-y-7">
+    <div className="mx-auto w-full max-w-[1100px] space-y-8">
       <PageHeader
         title={TITLES[tab].title}
         subtitle={TITLES[tab].subtitle}

@@ -4,12 +4,12 @@ import type { Profile } from '../../shared/types'
 
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
 
-/** Rótulo pequeno acima de um bloco ("Seus canais", "Para revisar") */
-export function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+/** Bloco com título em destaque e, à direita, um link ou ação ("Ver tudo") */
+export function Section({ title, action, children, className }: { title: string; action?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className="space-y-2.5">
+    <section className={cx('space-y-4', className)}>
       <div className="flex items-end justify-between gap-3">
-        <h2 className="text-[13px] font-medium text-muted">{title}</h2>
+        <h2 className="font-display text-[19px] font-semibold tracking-tight">{title}</h2>
         {action}
       </div>
       {children}
@@ -17,18 +17,32 @@ export function Section({ title, action, children }: { title: string; action?: R
   )
 }
 
-/** Cabeçalho da página: título à esquerda, abas pequenas no meio, ação à direita */
+/** Link discreto no canto de uma seção ("Ver tudo ›") */
+export function SeeAll({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="text-[14px] text-accent-2 transition hover:text-white">
+      {children} ›
+    </button>
+  )
+}
+
+/** Cabeçalho da página: título grande, subtítulo, abas pequenas e ação à direita */
 export function PageHeader({ title, subtitle, tabs, action }: { title: string; subtitle?: string; tabs?: ReactNode; action?: ReactNode }) {
   return (
-    <div className="flex min-h-12 items-center gap-6 border-b border-white/[0.07] pb-2">
-      <div className="min-w-0">
-        <h1 className="truncate text-[17px] font-semibold">{title}</h1>
-        {subtitle && <p className="truncate text-xs text-muted">{subtitle}</p>}
+    <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
+      <div className="min-w-0 flex-1">
+        <h1 className="truncate font-display text-[30px] font-semibold leading-tight tracking-tight">{title}</h1>
+        {subtitle && <p className="mt-1 truncate text-[15px] text-muted">{subtitle}</p>}
       </div>
-      {tabs && <div className="flex flex-1 justify-center">{tabs}</div>}
-      <div className={cx('flex shrink-0 items-center gap-2', !tabs && 'ml-auto')}>{action}</div>
+      {tabs && <div className="flex justify-center pb-0.5">{tabs}</div>}
+      {action && <div className="flex shrink-0 items-center gap-2 pb-0.5">{action}</div>}
     </div>
   )
+}
+
+/** Largura da página: preenche telas grandes sem esticar demais as linhas */
+export function Page({ children, wide }: { children: ReactNode; wide?: boolean }) {
+  return <div className={cx('mx-auto w-full space-y-10', wide ? 'max-w-[1680px]' : 'max-w-[1180px]')}>{children}</div>
 }
 
 /** Abas pequenas com sublinhado (como "Desktop · Mobile · Web") */
@@ -54,16 +68,16 @@ export function SubTabs<T extends string>({ value, options, onChange }: { value:
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
   // Sem backdrop-blur de propósito: ele cria camadas que escondem os menus "…" abertos
-  return <div className={cx('rounded-xl border border-white/[0.08] bg-white/[0.035] p-4', className)}>{children}</div>
+  return <div className={cx('rounded-2xl border border-white/[0.08] bg-white/[0.035] p-5', className)}>{children}</div>
 }
 
 /** Lista em vidro com linhas separadas (como "Installed"). Sem overflow escondido, para os menus "…" saírem da lista. */
 export function RowList({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx('divide-y divide-white/[0.06] rounded-xl border border-white/[0.08] bg-white/[0.03]', className)}>{children}</div>
+  return <div className={cx('divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.03]', className)}>{children}</div>
 }
 
 export function Row({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx('flex items-center gap-3 px-4 py-3 transition first:rounded-t-xl last:rounded-b-xl hover:bg-white/[0.025]', className)}>{children}</div>
+  return <div className={cx('flex items-center gap-4 px-5 py-3.5 transition first:rounded-t-2xl last:rounded-b-2xl hover:bg-white/[0.025]', className)}>{children}</div>
 }
 
 /** Bolinha de status com o texto ao lado */

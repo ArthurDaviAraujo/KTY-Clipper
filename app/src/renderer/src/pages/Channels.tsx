@@ -29,7 +29,7 @@ export default function ChannelsPage({ state, go, view, setView }: { state: AppS
       : `Os canais vigiados gravam sozinhos quando entram ao vivo${settings ? ` (verifica a cada ${settings.recorder.pollSeconds} s)` : ''}.`
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto w-full max-w-[1280px] space-y-8">
       <PageHeader
         title={title}
         subtitle={subtitle}

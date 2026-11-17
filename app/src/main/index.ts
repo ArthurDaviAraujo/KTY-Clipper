@@ -384,6 +384,8 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#191523',
     title: 'Clipador KTY',
+    // Ícone da janela e da barra de tarefas (logo do Clipador)
+    icon: join(app.getAppPath(), 'resources', 'icon.png'),
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#1b1726', symbolColor: '#cfc8e6', height: 48 },
     webPreferences: {

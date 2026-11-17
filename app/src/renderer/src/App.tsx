@@ -1,5 +1,30 @@
 import { useState, type ReactNode } from 'react'
-import { Archive, Check, Clapperboard, Cpu, Film, HardDrive, Home, Inbox, LayoutGrid, Library, Mic, Radio, Search, Sparkles, UserRound, X } from 'lucide-react'
+import {
+  Activity,
+  Archive,
+  Captions,
+  Check,
+  Clapperboard,
+  Cpu,
+  Download,
+  Film,
+  FolderOpen,
+  HardDrive,
+  Home,
+  Inbox,
+  LayoutGrid,
+  Library,
+  Mic,
+  Plus,
+  Radio,
+  Rocket,
+  Search,
+  Sparkles,
+  UserRound,
+  X
+} from 'lucide-react'
+import { setupSteps } from './pages/Home'
+import { Wordmark } from './Logo'
 import { useAppState } from './state'
 import { formatTimecode } from '../../shared/vod'
 import { cx } from './ui'
@@ -15,11 +40,15 @@ export type PageId = 'home' | 'clips' | 'channels' | 'settings'
 /** Canais: todos, só os ao vivo, a biblioteca de lives e VODs, ou um canal */
 export type ChannelsView = 'all' | 'live' | 'library' | number
 
+/** Início: visão geral, atividade completa ou o guia de primeiros passos */
+export type HomeView = 'overview' | 'activity' | 'guide'
+
 export interface GoOptions {
   liveId?: number | 'all'
   tab?: ClipsTab
   channels?: ChannelsView
   settings?: SettingsTab
+  home?: HomeView
 }
 export type Go = (page: PageId, opts?: GoOptions) => void
 
@@ -40,16 +69,21 @@ export default function App() {
   const [clipsSort, setClipsSort] = useState<ClipsSort>('best')
   const [channelsView, setChannelsView] = useState<ChannelsView>('all')
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('deteccao')
+  const [homeView, setHomeView] = useState<HomeView>('overview')
   const [query, setQuery] = useState('')
-  const { settings, disk, channels, clips, lives } = state
+  const { settings, disk, channels, clips, lives, jobs } = state
 
   const go: Go = (p, o) => {
     if (o?.liveId !== undefined) setClipsLive(o.liveId)
     if (o?.tab) setClipsTab(o.tab)
     if (o?.channels !== undefined) setChannelsView(o.channels)
     if (o?.settings) setSettingsTab(o.settings)
+    if (o?.home) setHomeView(o.home)
     setPage(p)
   }
+  const running = jobs.filter((j) => j.status === 'running' || j.status === 'queued').length
+  const approved = clips.filter((c) => c.review === 'approved').length
+  const missing = setupSteps(state).filter((s) => !s.ok).length
 
   const recording = channels.filter((c) => c.recording)
   const onAir = channels.filter((c) => c.live || c.recording)
@@ -62,11 +96,8 @@ export default function App() {
     <div className="flex h-full flex-col overflow-hidden">
       {/* Barra do topo: marca, seções, busca, avisos e perfil (os botões da janela ficam à direita) */}
       <header className="drag relative z-30 flex h-12 shrink-0 items-stretch border-b border-white/[0.07] bg-[#1b1726]/85 backdrop-blur-xl">
-        <div className="flex w-56 shrink-0 items-center gap-2.5 px-4">
-          <span className="grid size-7 place-items-center rounded-lg bg-gradient-to-br from-brand to-violet text-white shadow">
-            <Clapperboard size={15} />
-          </span>
-          <span className="text-[13px] font-semibold">Clipador KTY</span>
+        <div className="flex w-60 shrink-0 items-center px-5">
+          <Wordmark size={28} />
         </div>
         <nav className="no-drag flex items-stretch">
           {TOP.map((t) => (
@@ -110,11 +141,21 @@ export default function App() {
 
       <div className="flex min-h-0 flex-1">
         {/* Menu lateral da seção */}
-        <aside className="w-56 shrink-0 space-y-5 overflow-y-auto border-r border-white/[0.07] bg-[#1c1828]/60 px-3 py-4 backdrop-blur-xl">
+        <aside className="w-60 shrink-0 space-y-6 overflow-y-auto border-r border-white/[0.07] bg-[#1c1828]/60 px-3 py-5 backdrop-blur-xl">
           {page === 'home' && (
             <>
               <Group label="Início">
-                <SideItem icon={LayoutGrid} label="Visão geral" active />
+                <SideItem icon={LayoutGrid} label="Visão geral" active={homeView === 'overview'} onClick={() => setHomeView('overview')} />
+                <SideItem icon={Activity} label="Atividade" badge={running} active={homeView === 'activity'} onClick={() => setHomeView('activity')} />
+                <SideItem icon={Rocket} label="Primeiros passos" count={missing} active={homeView === 'guide'} onClick={() => setHomeView('guide')} />
+              </Group>
+              <Group label="Atalhos">
+                <SideItem icon={Inbox} label="Clipes para revisar" badge={toReview} onClick={() => go('clips', { tab: 'review', liveId: 'all' })} />
+                <SideItem icon={Check} label="Aprovados" count={approved} onClick={() => go('clips', { tab: 'approved', liveId: 'all' })} />
+                <SideItem icon={Plus} label="Adicionar canal" onClick={() => go('channels', { channels: 'all' })} />
+                <SideItem icon={Download} label="Importar VOD" onClick={() => go('channels', { channels: 'library' })} />
+                <SideItem icon={FolderOpen} label="Pasta dos clipes" onClick={() => disk && void window.api.openPath(disk.clipsDir)} />
+                <SideItem icon={Captions} label="Estilo da legenda" onClick={() => go('settings', { settings: 'clipes' })} />
               </Group>
               <Group label="Ao vivo agora">
                 {onAir.length === 0 && <p className="px-2 text-xs text-muted">Ninguém ao vivo.</p>}
@@ -196,8 +237,8 @@ export default function App() {
           )}
         </aside>
 
-        <main className="min-w-0 flex-1 overflow-y-auto px-8 pb-10 pt-4">
-          {page === 'home' && <HomePage state={state} go={go} />}
+        <main className="min-w-0 flex-1 overflow-y-auto px-8 pb-14 pt-8 xl:px-12 2xl:px-16">
+          {page === 'home' && <HomePage state={state} go={go} view={homeView} />}
           {page === 'clips' && (
             <ClipsPage state={state} liveId={clipsLive} tab={clipsTab} setTab={setClipsTab} sort={clipsSort} setSort={setClipsSort} query={query} clearQuery={() => setQuery('')} />
           )}
