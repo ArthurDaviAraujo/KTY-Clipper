@@ -36,6 +36,8 @@ export interface RecorderOptions {
   onLog(level: 'info' | 'warn' | 'error', message: string): void
   /** VOD: link HLS já resolvido (pula yt-dlp/Streamlink) */
   inputUrl?: string
+  /** VOD do YouTube: o som vem num link separado da imagem */
+  inputAudioUrl?: string
   /** VOD: começa neste segundo do vídeo */
   seekSeconds?: number
   /** VOD: grava só esta duração (s) */
@@ -100,6 +102,30 @@ export function resolveHls(ytdlp: string, url: string, quality: RecordQuality): 
 }
 
 /**
+ * Links do vídeo do YouTube para o ffmpeg copiar sem recodificar: imagem H.264 (avc1) e som AAC (mp4a),
+ * os únicos que cabem no .ts. O YouTube manda os dois separados (DASH); sem eles, cai num arquivo único.
+ */
+export function resolveYoutube(ytdlp: string, url: string, quality: RecordQuality): Promise<{ video: string; audio: string | null }> {
+  const h = quality === 'best' ? '' : `[height<=${quality}]`
+  const format = `bv*[vcodec^=avc1]${h}+ba[acodec^=mp4a]/b[vcodec^=avc1][acodec^=mp4a]${h}/b[vcodec^=avc1]`
+  return new Promise((resolve, reject) => {
+    const p = spawn(ytdlp, ['-g', '-f', format, '--no-warnings', '--encoding', 'utf-8', url], { windowsHide: true })
+    let out = ''
+    let err = ''
+    p.stdout.on('data', (d) => (out += d))
+    p.stderr.on('data', (d) => (err += d))
+    const t = setTimeout(() => p.kill(), 90_000)
+    p.on('close', (code) => {
+      clearTimeout(t)
+      const links = out.split(/\r?\n/).filter((l) => l.startsWith('http'))
+      if (code === 0 && links.length) resolve({ video: links[0].trim(), audio: links[1]?.trim() ?? null })
+      else reject(new Error(err.split(/\r?\n/).find((l) => /error/i.test(l))?.trim() || `yt-dlp saiu com código ${code}`))
+    })
+    p.on('error', reject)
+  })
+}
+
+/**
  * Grava uma live em pedaços .ts de duração fixa, sem recodificar.
  * Cada execução do ffmpeg escreve um CSV próprio; os pedaços prontos são lidos dele.
  * Uma execução termina quando a conexão cai ou quando stop() é chamado; quem decide reiniciar é o serviço.
@@ -143,6 +169,11 @@ export class SegmentRecorder {
     if (input !== 'pipe:0') args.push('-rw_timeout', '30000000')
     if (o.seekSeconds) args.push('-ss', o.seekSeconds.toFixed(3))
     args.push('-i', input)
+    if (o.inputAudioUrl) {
+      args.push('-rw_timeout', '30000000')
+      if (o.seekSeconds) args.push('-ss', o.seekSeconds.toFixed(3))
+      args.push('-i', o.inputAudioUrl, '-map', '0:v:0', '-map', '1:a:0')
+    }
     if (o.durationSeconds) args.push('-t', o.durationSeconds.toFixed(3))
     args.push(
       '-c', 'copy',

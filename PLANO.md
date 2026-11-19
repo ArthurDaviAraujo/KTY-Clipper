@@ -34,7 +34,7 @@ App desktop para Windows que vigia canais de streamers (Twitch e Kick), grava as
 
 ```
 ┌────────────────────── App Electron (React + TypeScript + Tailwind) ──────────────────────┐
-│  Telas: Início · Clipes · Canais · Ajustes  (busca, atividade e perfil no topo)           │
+│  Telas: Início · Clipes · Canais · Ajustes · Assistente  (busca, avisos e perfil no topo) │
 └───────────────┬──────────────────────────────────────────────────────────────────────────┘
                 │ IPC
 ┌───────────────▼──────────────── Processo principal (Node) ───────────────────────────────┐
@@ -94,11 +94,30 @@ Lista original:
 - **Proteção:** momento com clipe fica guardado e não some quando a detecção roda de novo.
 - **Medido:** clipe de 60 s em 1080×1920 gerado em ~20 s com `h264_amf`, 59,94 fps, −14,2 LUFS.
 
-**Etapa 1f — fila de aprovação e telas novas (2026-11-16, aprovada pelo usuário em 2026-11-17; falta a exportação):**
+**Etapa 1f — fila de aprovação e telas novas (2026-11-16, aprovada pelo usuário em 2026-11-17; exportação feita em 2026-11-17):**
 - **Revisão:** cada clipe fica "para revisar", "aprovado" ou "descartado". Aprovar e descartar no player e nos cartões; os descartados podem ser restaurados ou apagados. Um clipe por momento: gerar de novo substitui o anterior.
 - **Telas:** 4 abas (Início, Clipes, Canais, Ajustes) no lugar das 7 antigas, com menu lateral que muda conforme a aba. O Início mostra saudação, clipes para revisar, o que está rodando, canais e atalhos, mais as páginas Atividade e Primeiros passos. A busca no topo filtra os clipes.
 - **Perfis:** cada perfil guarda os próprios ajustes; pastas, programas e desempenho são da máquina e valem para todos. Exportar e importar em `.clipador.json`. Só no PC (sem login na nuvem).
-- **Falta:** a exportação para pasta (item 6 abaixo), a definir. Ainda não testados: restaurar e apagar os descartados, descartar momento.
+- **Exportação para pasta (postar à mão, 2026-11-17):**
+  - Ao aprovar, uma cópia do clipe vai para a pasta "para postar" (padrão: `D:Clipador KTYpara postar`), numa subpasta por dia, com um .txt com título e descrição do YouTube Shorts (#shorts, créditos com o link do canal, categoria) e a legenda do TikTok.
+  - A janela do clipe tem a seção Postar, com botões para copiar cada texto, as marcações "Postado no YouTube Shorts/TikTok" (com data e hora) e atalhos para o YouTube Studio e o TikTok.
+  - Os cartões aprovados mostram o que falta postar. A aba Aprovados tem "Copiar para a pasta" e "Pasta para postar".
+  - Voltar para revisão ou descartar tira a cópia, menos se já foi postado; apagar o clipe também apaga a cópia.
+  - Em Ajustes > Armazenamento: escolher a pasta e ligar ou desligar "Copiar ao aprovar". O assistente pega os textos, copia para a pasta e marca como postado.
+  - **Grupo "Postagem" na barra da esquerda de Clipes (2026-11-17, pedido do usuário para deixar mais organizado):**
+    - Para postar: os aprovados que faltam postar, numa lista com um bloco por rede (copiar título, descrição e legenda; marcar postado).
+    - Postados: do mais recente para o mais antigo.
+    - Pasta para postar.
+    - A aba Aprovados ficou só com os clipes, sem selos nem botões de postagem.
+    - No topo, "Posto no YouTube / TikTok" escolhe as redes. O clipe sai de "Para postar" quando foi postado em todas as escolhidas, e fica sempre pelo menos uma.
+  - **Para postar completo (2026-11-17, pedido do usuário):** cada clipe vira um cartão.
+    - Vídeo grande, que toca ali mesmo, com uma alça para arrastar o arquivo direto para a página de envio (`webContents.startDrag`), mais "Copiar caminho" e a pasta.
+    - Por rede, um passo a passo:
+      1. "Postar no YouTube/TikTok" abre `youtube.com/upload` ou `tiktok.com/upload` no navegador do PC e copia o caminho do vídeo; na janela de escolher arquivo é só colar com Ctrl+V e dar Enter.
+      2. Arrastar ou colar o vídeo.
+      3. Título, descrição e legenda à vista e editáveis, com contador e Copiar. A edição fica salva (migração 15, `clips.post_custom`), "restaurar" volta ao texto gerado, e o .txt da pasta é reescrito.
+      4. Marcar como postado.
+- **Ainda não testados:** restaurar e apagar os descartados, descartar momento.
 
 **Qualquer live e várias ao mesmo tempo (2026-11-17, testado com 4 lives reais):**
 - **Categoria ao longo da live:** cada troca de categoria fica anotada com o horário (tabela `live_games`). Em VOD da Twitch, vem dos capítulos (ex.: just volleyball → Just Chatting → Parasite Eve). Cada momento e cada clipe mostram a categoria do instante em que aconteceram.
@@ -115,6 +134,36 @@ Lista original:
   - Apagar uma live durante a detecção dava "Permission denied"; agora cancela a detecção e os clipes dela na fila, espera soltar os arquivos e apaga.
   - Busca de clipes da comunidade quebrava quando a Twitch devolvia "service error"; agora vira um aviso legível.
 - **Limite de disco:** 180 GB para as gravações no PC do usuário, apagando as mais antigas.
+
+**Padrões por modalidade (2026-11-17, testado com VOD real):**
+- Em Ajustes > Clipes > Por modalidade (liga/desliga), cada modalidade tem layout, duração mínima e máxima, margem antes e depois, e multiplicadores dos pesos de chat e áudio.
+  - Jogo: jogo + facecam, 20 a 45 s.
+  - Conversa: recorte do centro, 45 a 90 s, 8 s de margem antes.
+  - IRL: recorte, 25 a 60 s, áudio pesa mais.
+  - Esporte: tela inteira, 20 a 45 s.
+  - Criativo: tela inteira, 30 a 60 s.
+  - São pontos de partida, para ajustar com o uso. Live sem categoria usa o padrão geral.
+- A categoria do instante do lance escolhe a linha, então uma live que passa de conversa para jogo muda de padrão no meio. Os pesos valem por lance na detecção.
+- Duração mínima: o trecho cresce mais para trás (o contexto vem antes). Se a gravação começa logo antes, o que falta vem depois.
+- Modalidade fixa por canal: na página do canal (Automática, Jogo, Conversa, IRL, Esporte, Criativo). Vale para a IA, o layout, a duração e os pesos.
+- Recorte: centraliza na facecam marcada. Ajustar o recorte à mão num clipe vira o padrão do canal. No teste, o centro cortava o rosto do alanzoka no Just Chatting; ajustado uma vez, os próximos clipes já saem com o rosto no meio.
+- Teste: 10 min de Just Chatting do alanzoka → 2 momentos de conversa, clipes em recorte de 90 s (momento longo, cortado no máximo) e 45 s (curto, crescido até o mínimo), 1080×1920 a 60 fps.
+
+**Assistente (2026-11-17, pedido do usuário, testado com o Gemini):**
+- **Onde fica:** aba "Assistente" ao lado de Ajustes, e uma barra lateral que acompanha a conversa em qualquer tela (botão no topo, ao lado do sino). Liga e desliga em Ajustes > IA e fala.
+- **Como funciona:** usa o Gemini já configurado, com a mesma chave grátis, chamando funções do app ("function calling"). Ele consulta o app e faz o que for pedido, em vez de só explicar.
+- **Funções:**
+  - Consultar: resumo do app, canais, lives e VODs, clipes, momentos, busca na transcrição e no chat, detalhes de um momento, ajustes e atividade.
+  - Fazer: adicionar canal, vigiar ou pausar, fixar modalidade, importar VOD (com trecho), gerar clipe, aprovar ou descartar, descartar momento, procurar momentos de novo, mudar ajustes (lista fechada), ligar detectores, ajustar o padrão de uma modalidade, abrir telas e abrir as pastas.
+- **Segurança:** apagar clipe ou gravação, parar gravação e parar de vigiar mostram um cartão com Confirmar e Cancelar; nada disso roda sem o clique. A conversa fica guardada no banco.
+- **Velocidade:** com o pensamento do Gemini no nível baixo, cada resposta leva de 1 a 5 s. Picos do servidor (um de 54 s no teste) ficam registrados quando passam de 20 s.
+- **Ainda não:** falar por voz (o Whisper já existe no app e daria para usar); postar nas redes (fase 2).
+- **Barra lateral com opções (2026-11-17, pedido do usuário):**
+  - O botão do topo abre um menu: mostrar ou esconder a barra e escolher o que aparece nela.
+  - Opções: Assistente; Ao vivo (quem está ao vivo e gravando, com atalho para os clipes); Para revisar (aprovar ou descartar sem sair da tela); Atividade (tarefas e avisos, igual ao sino).
+  - Com mais de uma marcada, a barra ganha abas com ícones no topo.
+  - A escolha fica lembrada no PC. Na aba Assistente, o assistente sai da barra para não aparecer duas vezes.
+- **Ícone da IA:** faísca amarela (#facc15) ao lado de "Assistente", na aba do topo, no menu e na barra.
 Ideias para depois: IA lendo a transcrição inteira; Whisper na placa (Vulkan).
 Descobertas: a Twitch costura anúncios no vídeo (fMP4 com `EXT-X-DISCONTINUITY`/`EXT-X-MAP` de outro codificador) e o ffmpeg direto corrompe todos os quadros → **Twitch exige Streamlink** (`--twitch-disable-ads`); a Kick grava limpa só com ffmpeg. O chat da Kick mudou para credenciais vindas do servidor (Pusher/Centrifugo) → fica para a 1c.
 
@@ -123,22 +172,63 @@ Descobertas: a Twitch costura anúncios no vídeo (fMP4 com `EXT-X-DISCONTINUITY
 3. Detectores: picos de chat, áudio (volume, risada), fala (Whisper), gatilhos de voz, IA de texto (título, motivo, nota).
 4. Fusão com nota 0–100 explicada; corte com margem antes do pico.
 5. Gerador vertical: layouts (jogo + facecam, tela cheia), legenda palavra a palavra PT/EN, título e hashtags no idioma do canal.
-6. Fila de aprovação ✅ e exportação para pasta (falta).
+6. Fila de aprovação ✅ e exportação para pasta ✅ (postar à mão até a fase 2).
+
+### Próximo passo (combinado em 2026-11-18, não começado) — Aprender com quem viraliza
+- Analisar canais de cortes que viralizam no TikTok, no Instagram (Reels) e no YouTube (Shorts): que trechos eles pegam, duração, gancho dos primeiros segundos, título, descrição, hashtags, legenda e capa.
+- Transformar isso em regras e exemplos para a KaTY (escolher os lances, dar título e descrição), focando no que dá view hoje.
+- Ideias para discutir: (1) lista de canais de referência por modalidade e plataforma; (2) baixar só metadados e números (views, curtidas, data, duração, título, descrição) com o yt-dlp, sem vídeo, para achar padrões dos mais vistos; (3) transcrever o começo dos mais virais para estudar o gancho; (4) guardar como "estilos" de título e descrição com exemplos reais, usados como exemplos no pedido da KaTY; (5) comparar com os clipes do app e medir; (6) quando houver postagem automática, medir os nossos e ajustar sozinho.
+- Canais de referência enviados pelo usuário (TikTok): @cortesfastoficial, @projetcshots, @gamescortestv, @cortes_gamerbrz, @gtacortesrp.
+- **Feito em 2026-11-18 (primeira rodada):** análise de 300 cortes dos 5 canais pelo yt-dlp (sem login, só dados). Os 15% mais vistos de cada canal têm mediana de 56 s (metade entre 39 e 64 s; vários de 90 a 124 s); títulos com ~45 letras, "!" em 67%, emoji no fim (😱 😂 🤔), afirmação forte ou pergunta, nomes conhecidos; o canal com mais views (gamescortestv, mediana 11 mil contra ~1,5 mil dos outros) usa CAIXA ALTA + emoji em 98%; 5 hashtags (específicas + gerais). Aplicado: durações novas por modalidade (jogo 30–75 s, conversa 40–120 s, IRL 30–90, esporte 25–60, criativo 30–90; quem tinha o padrão antigo passa sozinho), a KaTY lê 45 s antes e depois do lance e escolhe começo e fim do corte (história completa, até 150 s), títulos e hashtags no estilo dos que viralizam. Próximas rodadas: Instagram e YouTube, estudar o gancho dos primeiros segundos e medir os nossos.
 
 ### Fase 2 — Publicar e aprender
 - Postagem no YouTube (API oficial, OAuth); TikTok pela API de postagem (contas não auditadas podem ficar limitadas a privado: verificar). Agendamento e limite diário.
 - Coleta de métricas e ajuste dos pesos por canal.
-- Busca por descrição e por palavra.
+- Busca por descrição e por palavra ✅ (2026-11-17): busca do topo abre Clipes > Busca; acha clipes, momentos e trechos de tudo o que foi falado (sem acento, frase inteira primeiro), com "Fazer clipe daqui"; "Perguntar à IA" (Gemini) acha pelo sentido entre os momentos guardados (~15 s). O assistente também busca nas falas.
 
 ### Fase 3 — Diferenciais
-- Clipar ao vivo com atraso de poucos minutos.
+- Clipar ao vivo com atraso de poucos minutos ✅ (2026-11-17): com "Clipar ao vivo" ligado (padrão), grava em pedaços de 60 s e procura momentos a cada minuto; clipes automáticos esperam 45 s depois do lance. Teste com 3 lives reais por 30 min: a maioria dos clipes ficou pronta 2 a 6 min depois do lance (alguns 8 a 12 min, parte por reinícios do teste). Painel "Clipar ao vivo" no Início com os canais gravando, os últimos clipes de cada live e o botão "Clipar agora" (últimos ~30 s, pronto em 1 a 2 min).
 - Perfis de tela por jogo (o GTA 6 é o primeiro, depois do lançamento): juntar quadros, marcar eventos (morte, polícia, explosão, gol, vitória) e treinar ou usar IA de visão.
-- Padrões por modalidade: duração, layout e pesos dos detectores próprios para jogo, conversa, IRL, esporte e criativo (a modalidade já é reconhecida pela categoria).
 - Cruzamento entre streamers (mesmo evento em várias lives).
 - Vídeo longo automático com os melhores momentos.
 
+**Vigiar e gravar separados (2026-11-17, pedido do usuário: "vigiar não é gravar"):** cada canal tem duas chaves. Vigiar = checar a cada minuto se está ao vivo e avisar no Windows, sem gravar. Gravar = salvar a live e clipar quando estiver ao vivo; ligar Gravar liga Vigiar, desligar Vigiar desliga Gravar. Migração 16 (`channels.record`, padrão 1: os canais antigos continuam gravando; canal novo entra só vigiando). No Início, os ao vivo só vigiados aparecem com "Começar a gravar" (começa na hora). O assistente ganhou `gravar_canal`.
+
+**YouTube como fonte e "Todos" (2026-11-17):** além de Twitch e Kick, o app vigia, grava e clipa lives do YouTube e importa vídeos e lives encerradas do YouTube por link (youtube.com/watch, youtu.be, /live). Sem chave de API: ao vivo pela página "<canal>/live"; gravação pelo Streamlink; chat ao vivo pelo mesmo endpoint do site (visão "Chat ao vivo", a cada ~5–8 s); importação pelo yt-dlp (imagem H.264 + som AAC separados, copiados sem recodificar); replay do chat em páginas (a mesma fonte do yt-dlp: medido, as duas trouxeram as mesmas 183 mensagens; a visão "Replay do chat ao vivo" responde 400 fora do navegador). Categoria do YouTube vira modalidade (Gaming = jogo, Sports = esporte, People & Blogs = conversa…). Migração 17 refaz a tabela de canais (com as chaves estrangeiras desligadas) para aceitar `youtube`. Em Canais, "Todos" (padrão): com link, a plataforma vem do link; com só o nome, procura nas três ao mesmo tempo e mostra onde achou. O mesmo streamer em várias plataformas (mesmo nome) aparece num bloco só, e a lista segue a ordem de chegada.
+
+**Busca de canal com IA e blocos recolhidos (2026-11-17):** em "Todos", sem link, o app procura ao mesmo tempo o nome exato, a busca de cada plataforma (Twitch searchFor, Kick /api/search, YouTube resultados filtrados por canal) e o Gemini (pensamento baixo), que entende nome com erro, apelido ou descrição e chuta até 4 nomes; os palpites são confirmados nas plataformas e as 6 opções saem por nota (palpite da IA, nome exato, posição na busca, seguidores; cópias com menos de 50 seguidores perdem pontos), com "A IA entendeu: …", "Mais provável" e o porquê. Sem chave do Gemini, fica só a busca das plataformas, com aviso. Testado no app real: "o streamer de cs da tribo" → Gaules; "casimito" → Casimiro; "gaulles" → Gaules; "o canal que passa jogo do brasil" → CazéTV (3 a 15 s). O assistente usa a mesma busca em `procurar_canal`. Em Canais, cada streamer com várias plataformas fica recolhido numa linha (plataformas com bolinha de status e resumo "ao vivo na Twitch"); um clique expande; "Expandir todos" ou "Recolher todos"; lembrado neste PC.
+
+**KaTY (2026-11-17, nome escolhido pelo usuário):** a IA do Clipador KTY se chama "KaTY", escrito exatamente assim. O nome vale na aba (antes "Assistente"), na barra lateral, em Ajustes, na busca de canais ("A KaTY entendeu") e na busca por descrição ("Perguntar à KaTY"). Ela se apresenta como KaTY, no feminino. A instrução dela foi atualizada com YouTube, vigiar e gravar, clipar ao vivo e busca. Fácil de desfazer: só troca de texto.
+**Reservas da KaTY (2026-11-18):** quando o Gemini não responde (sobrecarga, cota do dia ou sem chave), a análise dos lances, a busca pela descrição e a busca de canal usam a próxima da fila: Groq → OpenRouter (só modelos `:free`) → Mistral → IA local (Ollama, se ligada). Antes disso, o próprio Gemini já tenta outros modelos dele. Todas falam o formato da OpenAI (`/chat/completions`, JSON). Cada uma tem o próprio campo em Ajustes > IA e fala ("Reservas da KaTY"); o app escolhe o modelo sozinho (Groq: gpt-oss-120b; OpenRouter: Gemma 4 31B ou Nemotron 3 Ultra hoje). A conversa com a KaTY (funções) continua só no Gemini.
+**Limpeza das gravações (2026-11-18):** a opção "Apagar pedaços que não viraram clipe" (Ajustes > Armazenamento, desligada por padrão) funciona. 30 min depois que a live acaba, com a análise feita depois do fim e nada na fila daquela live, o app guarda só os pedaços que tocam um clipe pendente ou aprovado (±30 s), um momento mantido ou ainda não decidido que a KaTY não recusou (±60 s) e o corte que ela escolheu (±30 s). O resto é apagado e marcado `deleted` (o histórico da live fica). Clipes em Descartados, momentos descartados e momentos recusados pela KaTY não seguram nada. Roda ao abrir o app, a cada 10 min e ao ligar a opção. Os arquivos dos clipes não são apagados. Depois da limpeza não dá para reanalisar a live inteira.
+**Facecam pela KaTY e recorte fino (2026-11-18):**
+- O layout "Jogo + facecam" virou "Facecam + jogo" (câmera em cima, jogo embaixo).
+- Se o canal não tem facecam marcada, a KaTY olha 3 quadros da live (Gemini, `box_2d` de 0 a 1000) e acha a câmera que fica parada; também pelo botão "Achar com a KaTY". Só o Gemini enxerga imagem; sem achar, o clipe sai em tela inteira como antes.
+- Ajustes > Visual: altura da facecam (automático ou 25–50%).
+- Ajustes > Corte > Recorte fino:
+  - encaixar começo e fim na fala, até 2,5 s para cada lado;
+  - tirar as pausas longas: só em conversa por padrão. Em jogo, só onde o som está baixo; nunca mais de 35% do corte; respiro de 0,2 s e fade de 30 ms em cada emenda.
+- Base: auto-editor, video-use, clipsmith, Cut.Pro e a documentação do Gemini (no Segundo Cérebro).
+
+**Raciocínio da KaTY v2 (2026-11-18):** com base em 9 canais de cortes em alta no YouTube, 300 cortes do TikTok, 8 artigos e 6 vídeos de profissionais (resumo no Segundo Cérebro, "Cortes que viralizam - pesquisa e padrões"), a revisão dos lances segue 6 passos: 1) o que aconteceu (o chat é o termômetro); 2) gancho: começo do corte com algo forte nos 3 primeiros segundos (no meio da ação; em conversa, na primeira palavra da frase forte); 3) desfecho: fim logo depois da reação; 4) teste do estranho; 5) notas por partes (gancho 30, desfecho 30, emoção 20, compartilhável 20; a soma vira a nota da IA, `rubricScore`); 6) título (assunto no começo, frase entre aspas vale, sem spoiler de jogo novo) e hashtags. A IA escreve `analise` e `gancho` antes de decidir (`propertyOrdering`). Duração: 40 a 75 s em geral, ≥60 s quando a história existe (o TikTok só paga ≥60 s), até 150 s. A janela do clipe mostra o gancho e a nota por partes.
+**Ajustes × Configurações (2026-11-18, pedido do usuário):** "Ajustes" (aba do topo) ficou só com o que muda os clipes: Corte (clipes automáticos, clipar ao vivo, margens, duração, por modalidade), Visual (layout, legenda, título na tela, qualidade do vídeo), Detecção e Postagem (pasta para postar, redes, apagar descartados). "Configurações" abre pela engrenagem no topo, à esquerda do botão da barra lateral, e tem o app em si: KaTY e IA (chaves, reservas, Whisper, conversa), Gravação (com segundo plano), Armazenamento, Perfil e Sistema. Links antigos para `settings: 'ia'`, `'perfil'` etc. caem sozinhos em Configurações; `'clipes'` vira Visual. Personalizações novas do clipe: fonte da legenda (Segoe UI Black, Arial Black, Impact, Bahnschrift, Verdana), cor das outras palavras, contorno (fino, normal, grosso), altura da legenda (−25 % a +15 %), tempo do título na tela (0 = o clipe todo) e caixa do título (branca, preta, amarela), com prévia da legenda. A KaTY também consegue mudar essas opções.
+**Apagar Descartados (2026-11-18):** no topo da aba Clipes > Descartados, "Apagar do disco" escolhe nunca (padrão), ao abrir o app, ou depois de 1, 7 ou 30 dias, contados de quando o clipe foi descartado (`clips.reviewed_at`, migração 18; os antigos contam da criação). Também tem o botão "Apagar todos agora", que pede confirmação. Apaga o vídeo, a capa e o clipe da lista e marca o lance como descartado, para o clipe automático não refazer. Os aprovados nunca são tocados. Ajuste `clips.discardedDelete`; roda ao abrir o app, a cada 10 min e ao trocar a opção.
+
+
+
+
 ### Fase 4 — Para os amigos
 - Instalador, atualização automática, assistente de primeira execução, guia curto.
+
+**Instalador do Windows (2026-11-17):**
+- `npm run dist` (electron-vite build + electron-builder 26.18.0, NSIS x64) gera `D:\Clipador KTY\instalador\Clipador-KTY-Setup-0.1.0.exe` (~261 MB).
+  - Os programas (ffmpeg, ffprobe, yt-dlp, Streamlink, Whisper) vão embutidos em `resources\programas`.
+  - Usa o Electron de `node_modules` (`electronDist`), sem baixar outro.
+  - Ícone `resources/icon.ico`; instalação por usuário, com escolha de pasta e atalhos na área de trabalho e no menu Iniciar.
+  - Sem assinatura digital: o Windows SmartScreen avisa na primeira vez.
+- O app instalado guarda os dados em `%APPDATA%\Clipador KTY\dados`. Na primeira abertura, o Início oferece "Trazer meus dados" (também em Ajustes > Sistema): copia o banco de outra pasta "dados" (VACUUM INTO) e as fotos de perfil, troca o banco com o app fechado e reabre. As gravações e os clipes no disco não mudam.
+- `Abrir Clipador.bat` abre o app instalado quando ele existe; o modo de desenvolvimento ficou em `Abrir Clipador (desenvolvimento).bat`.
+- **Falta para os amigos:** o modelo do Whisper (142 MB) não vai no instalador (um botão para baixar está pendente); atualização automática; assinatura digital.
 
 ## 4.1 Linguagens e tecnologias
 
@@ -285,6 +375,7 @@ Estilo de uma segunda referência enviada pelo usuário (app no estilo do Creati
   - Ajustes: detecção, IA, clipes, gravação, armazenamento, perfil e sistema.
 - **Fonte:** Inter com tamanho óptico, empacotada no app. Substitui a SF Pro, que só pode ser usada em plataformas da Apple.
 - **Logo própria:** `app/resources/logo.svg`, `icon.png` (ícone da janela) e `icon.ico` (para o instalador da fase 4).
+- **Símbolos das plataformas (2026-11-17):** YouTube, TikTok, Twitch e Kick com os desenhos oficiais do Simple Icons (licença CC0, v13.21.0), nas cores das marcas, guardados em `BrandIcon.tsx` (funcionam sem internet). Aparecem na postagem, nos avatares dos canais (selo) e no seletor de plataforma.
 - **Largura:** o conteúdo ocupa até 1680 px em tela cheia e se ajusta com a janela restaurada.
 
 A primeira referência (2026-11-16: app escuro em vinho e magenta, com trilho de avatares e banner) foi substituída por este visual.

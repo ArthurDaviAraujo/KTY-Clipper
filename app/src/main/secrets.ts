@@ -11,6 +11,11 @@ export function setSecret(db: Db, name: string, value: string | null): void {
   kvSet(db, `secret:${name}`, safeStorage.encryptString(value).toString('base64'))
 }
 
+/** Existe um segredo guardado que este Windows não consegue abrir (ex.: salvo por outro usuário ou outro ambiente)? */
+export function secretUnreadable(db: Db, name: string): boolean {
+  return !!kvGet<string | null>(db, `secret:${name}`) && getSecret(db, name) == null
+}
+
 export function getSecret(db: Db, name: string): string | null {
   const v = kvGet<string | null>(db, `secret:${name}`)
   if (!v) return null

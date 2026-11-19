@@ -59,7 +59,7 @@ describe('segment list', () => {
 describe('database migrations', () => {
   it('reach the latest version with chat and VOD columns', () => {
     const db = openDb(':memory:')
-    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(11)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(18)
     const cols = (db.prepare('PRAGMA table_info(lives)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual(expect.arrayContaining(['kind', 'source_url', 'range_start_s', 'range_end_s', 'chat_status']))
     db.prepare(`INSERT INTO channels(platform, login, created_at) VALUES ('twitch', 'x', 0)`).run()

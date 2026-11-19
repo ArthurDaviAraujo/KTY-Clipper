@@ -1,19 +1,27 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Check, Clapperboard, FolderOpen, Loader2, Play, RefreshCw, RotateCcw, Search, Sparkles, Trash2, Undo2, X } from 'lucide-react'
-import type { ClipRecord, Job, MomentRecord, TimelinePoint } from '../../../shared/types'
+import { Check, Clapperboard, FolderOpen, Loader2, Play, RefreshCw, RotateCcw, Search, Sparkles, Trash2, Undo2, Upload, X } from 'lucide-react'
+import type { ClipRecord, DiscardedDelete, Job, MomentRecord, TimelinePoint } from '../../../shared/types'
 import { formatTimecode } from '../../../shared/vod'
 import type { AppState } from '../state'
 import { ClipModal, ClipStudio } from '../ClipModal'
+import { PostingList } from './Posting'
+import { PostCard } from './PostCard'
+import { SearchView } from './Search'
+import { BrandIcon } from '../BrandIcon'
+import { lastPosted, postDone } from '../../../shared/post'
 import { Button, Card, PageHeader, SubTabs, cx } from '../ui'
 
-export type ClipsTab = 'review' | 'approved' | 'rejected' | 'moments'
+export type ClipsTab = 'review' | 'approved' | 'rejected' | 'moments' | 'topost' | 'posted' | 'search'
 export type ClipsSort = 'best' | 'recent'
 
 const TABS: Record<ClipsTab, { label: string; empty: string }> = {
   review: { label: 'Para revisar', empty: 'Nenhum clipe esperando você. Os automáticos e os que você gerar aparecem aqui.' },
   approved: { label: 'Aprovados', empty: 'Os clipes aprovados ficam aqui, prontos para postar.' },
   rejected: { label: 'Descartados', empty: 'Nada descartado.' },
-  moments: { label: 'Momentos sem clipe', empty: 'Nenhum momento sobrando. Eles aparecem quando uma live é gravada ou um VOD é importado.' }
+  moments: { label: 'Momentos sem clipe', empty: 'Nenhum momento sobrando. Eles aparecem quando uma live é gravada ou um VOD é importado.' },
+  topost: { label: 'Para postar', empty: 'Nada para postar agora. Os clipes que você aprovar aparecem aqui com os textos prontos.' },
+  posted: { label: 'Postados', empty: 'Nenhum clipe postado ainda. Marque "postado" em Para postar depois de subir o vídeo.' },
+  search: { label: 'Busca', empty: '' }
 }
 
 const scoreTone = (s: number) => (s >= 70 ? 'from-[#ff2d55] to-gold' : s >= 50 ? 'from-accent to-violet' : 'from-white/20 to-white/10')
@@ -67,8 +75,18 @@ export default function ClipsPage({
   const order = <T extends { score: number | null; createdAt?: number; peakS?: number; id: number }>(a: T, b: T) =>
     sort === 'best' ? (b.score ?? 0) - (a.score ?? 0) : b.id - a.id
 
-  const review = tab === 'review' ? 'pending' : tab === 'approved' ? 'approved' : 'rejected'
-  const shown = tab === 'moments' ? [] : scoped.filter((c) => c.review === review && matchClip(c)).sort(order)
+  const posting = tab === 'topost' || tab === 'posted'
+  const searching = tab === 'search'
+  const nets = state.settings?.publishing.networks ?? { youtube: true, tiktok: true }
+  const review = tab === 'review' ? 'pending' : tab === 'rejected' ? 'rejected' : 'approved'
+  const shown =
+    tab === 'moments'
+      ? []
+      : posting
+        ? scoped
+            .filter((c) => c.review === 'approved' && c.status === 'ready' && postDone(c.posted, nets) === (tab === 'posted') && matchClip(c))
+            .sort(tab === 'posted' ? (a, b) => lastPosted(b.posted) - lastPosted(a.posted) : order)
+        : scoped.filter((c) => c.review === review && matchClip(c)).sort(order)
   const free = moments.filter((m) => m.status === 'new' && !withClip.has(m.id) && matchMoment(m)).sort(order)
   const jobById = useMemo(() => new Map(state.jobs.map((j) => [j.id, j])), [state.jobs])
   const detecting = state.jobs.some((j) => j.type === 'detect:live' && (j.status === 'running' || j.status === 'queued'))
@@ -77,9 +95,10 @@ export default function ClipsPage({
   return (
     <div className="mx-auto w-full max-w-[1680px] space-y-8">
       <PageHeader
-        title={live ? `${live.channelName} · ${new Date(live.startedAt).toLocaleDateString('pt-BR')}` : 'Todos os clipes'}
-        subtitle={live ? live.title : TABS[tab].label}
+        title={searching ? 'Busca' : live ? `${live.channelName} · ${new Date(live.startedAt).toLocaleDateString('pt-BR')}` : 'Todos os clipes'}
+        subtitle={searching ? (query.trim() ? `“${query.trim()}” em clipes, momentos e no que foi falado` : 'Clipes, momentos e tudo o que foi falado') : live ? live.title : TABS[tab].label}
         tabs={
+          tab === 'posted' || searching ? undefined : (
           <SubTabs
             value={sort}
             onChange={setSort}
@@ -88,9 +107,40 @@ export default function ClipsPage({
               { value: 'recent', label: 'Recentes' }
             ]}
           />
+          )
         }
         action={
-          liveId !== 'all' ? (
+          posting ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[12px] text-muted">Posto no</span>
+              {(['youtube', 'tiktok'] as const).map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  title={nets[n] ? 'Clique para não contar esta rede' : 'Clique para contar esta rede'}
+                  onClick={() => void state.updateSettings({ publishing: { networks: { [n]: !nets[n] } } })}
+                  className={cx(
+                    'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[12px] transition',
+                    nets[n] ? 'border-accent/50 bg-accent/15 text-text' : 'border-white/15 text-muted hover:text-text'
+                  )}
+                >
+                  {nets[n] && <Check size={11} />} <BrandIcon brand={n} size={13} /> {n === 'youtube' ? 'YouTube' : 'TikTok'}
+                </button>
+              ))}
+              {tab === 'topost' && shown.some((c) => !c.exportedPath) && (
+                <Button variant="ghost" onClick={() => void window.api.exportApproved()} title="Copia para a pasta para postar os aprovados que ainda não estão lá">
+                  <Upload size={13} /> Copiar para a pasta
+                </Button>
+              )}
+              {state.disk && (
+                <Button variant="ghost" onClick={() => void window.api.openPath(state.disk!.exportDir)} title={state.disk.exportDir}>
+                  <FolderOpen size={13} /> Pasta para postar
+                </Button>
+              )}
+            </div>
+          ) : tab === 'rejected' ? (
+            <DiscardedControls state={state} count={state.clips.filter((c) => c.review === 'rejected').length} />
+          ) : searching ? undefined : liveId !== 'all' ? (
             <Button variant="ghost" disabled={detecting} onClick={() => void window.api.detectNow(liveId)} title="Rodar os detectores de novo nesta live">
               <RefreshCw size={13} className={detecting ? 'animate-spin' : ''} /> {detecting ? 'Procurando…' : 'Procurar de novo'}
             </Button>
@@ -98,7 +148,7 @@ export default function ClipsPage({
         }
       />
 
-      {q && (
+      {q && !searching && (
         <div className="flex items-center gap-2 text-[13px] text-muted">
           <Search size={13} /> Buscando “{query.trim()}” em {TABS[tab].label.toLowerCase()}
           <button type="button" onClick={clearQuery} className="text-accent-2 hover:underline">
@@ -107,7 +157,35 @@ export default function ClipsPage({
         </div>
       )}
 
-      {tab !== 'moments' && (
+      {posting && (
+        <>
+          {shown.length === 0 && <Empty text={q ? 'Nada encontrado nesta aba.' : TABS[tab].empty} />}
+          {shown.length > 0 && tab === 'topost' && (
+            <div className="space-y-5">
+              {shown.map((c) => (
+                <PostCard key={c.id} clip={c} networks={nets} onOpen={setStudio} />
+              ))}
+            </div>
+          )}
+          {shown.length > 0 && tab === 'posted' && <PostingList clips={shown} networks={nets} onOpen={setStudio} />}
+        </>
+      )}
+
+      {searching && (
+        <SearchView
+          query={query}
+          clips={state.clips}
+          aiReady={!!state.settings && state.settings.ai.provider === 'gemini' && !!state.settings.ai.geminiModel}
+          renderClip={(c) => (
+            <ClipCard key={c.id} clip={c} job={c.jobId != null ? (jobById.get(c.jobId) ?? null) : null} onOpen={() => setStudio(c.id)} onRetry={() => c.momentId != null && setMaking(c.momentId)} />
+          )}
+          renderMoment={(m) => <MomentRow key={m.id} m={m} showLive onMake={() => setMaking(m.id)} />}
+          onMake={setMaking}
+          onOpenClip={setStudio}
+        />
+      )}
+
+      {tab !== 'moments' && !posting && !searching && (
         <>
           {shown.length === 0 && <Empty text={q ? 'Nada encontrado nesta aba.' : TABS[tab].empty} />}
           <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-5 2xl:grid-cols-[repeat(auto-fill,minmax(230px,1fr))]">
@@ -148,6 +226,7 @@ export default function ClipsPage({
           clip={open}
           moment={moments.find((m) => m.id === open.momentId) ?? null}
           onClose={() => setStudio(null)}
+          onReplaced={setStudio}
           onEdit={() => {
             setStudio(null)
             if (open.momentId != null) setMaking(open.momentId)
@@ -163,6 +242,46 @@ export default function ClipsPage({
             setTab('review')
           }}
         />
+      )}
+    </div>
+  )
+}
+
+const DISCARDED_OPTIONS: { value: DiscardedDelete; label: string }[] = [
+  { value: 'never', label: 'Nunca' },
+  { value: 'startup', label: 'Ao abrir o app' },
+  { value: '1d', label: 'Depois de 1 dia' },
+  { value: '7d', label: 'Depois de 7 dias' },
+  { value: '30d', label: 'Depois de 30 dias' }
+]
+
+/** Aba Descartados: apagar os clipes descartados sozinho (ao abrir o app ou depois de um prazo) ou todos agora. */
+function DiscardedControls({ state, count }: { state: AppState; count: number }) {
+  const mode = state.settings?.clips.discardedDelete ?? 'never'
+  const canPurge = typeof window.api.purgeRejected === 'function'
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-[12px] text-muted">Apagar do disco</span>
+      <select
+        value={mode}
+        title="Os vídeos dos clipes descartados são apagados sozinhos; o lance não volta a virar clipe"
+        onChange={(e) => void state.updateSettings({ clips: { discardedDelete: e.target.value as DiscardedDelete } })}
+        className="rounded-full border border-white/15 bg-panel px-3 py-1 text-[12px] text-text outline-none transition hover:border-white/30 focus:border-accent"
+      >
+        {DISCARDED_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {canPurge && (
+        <Button
+          variant="ghost"
+          disabled={!count}
+          onClick={() => confirm(`Apagar do disco ${count === 1 ? 'o clipe descartado' : `os ${count} clipes descartados`}? Não dá para desfazer.`) && void window.api.purgeRejected()}
+        >
+          <Trash2 size={13} /> Apagar todos agora
+        </Button>
       )}
     </div>
   )

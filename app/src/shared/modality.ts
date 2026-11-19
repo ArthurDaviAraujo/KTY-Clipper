@@ -59,7 +59,19 @@ const KNOWN: Record<string, Modality> = {
   'dj s': 'creative',
   djs: 'creative',
   'writing and reading': 'creative',
-  creative: 'creative'
+  creative: 'creative',
+  // Categorias do YouTube (o YouTube não diz o jogo na página da live; "Gaming" cai em jogo)
+  'people and blogs': 'talk',
+  entertainment: 'talk',
+  comedy: 'talk',
+  education: 'talk',
+  'news and politics': 'talk',
+  'film and animation': 'talk',
+  'nonprofits and activism': 'talk',
+  'howto and style': 'creative',
+  'travel and events': 'irl',
+  'pets and animals': 'irl',
+  'autos and vehicles': 'irl'
 }
 
 /** Modalidade de uma categoria; qualquer categoria desconhecida é um jogo. Sem categoria: null. */

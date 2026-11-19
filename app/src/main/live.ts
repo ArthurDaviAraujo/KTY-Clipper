@@ -6,10 +6,15 @@ import type { Db } from './db'
 import type { Logger } from './logs'
 import { twitchStatus, TwitchChat, type ChatMessage } from './platforms/twitch'
 import { KickChatPoller, kickStatus } from './platforms/kick'
+import { YoutubeChatPoller, youtubeChannelInfo, youtubeStatus, youtubeWatchUrl, type YoutubeChannel } from './platforms/youtube'
 import { SegmentRecorder, type RecorderTools } from './recorder'
 import { noteGame } from './games'
+import { MODALITIES, type Modality } from '../shared/modality'
+import { recordSegmentSeconds } from '../shared/settings'
+
+const MODALITY_IDS = Object.keys(MODALITIES) as Modality[]
 import { channelUrl, parseChannelInput } from '../shared/channels'
-import type { ChannelState, LiveInfo, Platform, RecordingInfo, Settings } from '../shared/types'
+import type { ChannelMatch, ChannelState, LiveInfo, Platform, RecordingInfo, Settings } from '../shared/types'
 
 interface ChannelRow {
   id: number
@@ -17,9 +22,13 @@ interface ChannelRow {
   login: string
   display_name: string | null
   avatar_url: string | null
+  /** Vigiar: o app checa se o canal está ao vivo */
   enabled: number
+  /** Gravar quando estiver ao vivo (precisa de vigiar) */
+  record: number
   last_checked_at: number | null
   last_error: string | null
+  modality: string | null
 }
 
 interface Recording extends RecordingInfo {
@@ -29,7 +38,8 @@ interface Recording extends RecordingInfo {
   offlineSince: number | null
   nextSeq: number
   done: Promise<void>
-  kickChat: KickChatPoller | null
+  /** Chat lido por consulta (Kick e YouTube); a Twitch usa o IRC compartilhado */
+  chatPoller: { stop(): void } | null
   /** Categoria vista por último (para anotar as trocas durante a live) */
   game: string | null
 }
@@ -137,6 +147,7 @@ export class LiveService extends EventEmitter {
       displayName: r.display_name ?? r.login,
       avatarUrl: r.avatar_url,
       enabled: !!r.enabled,
+      record: !!r.enabled && !!r.record,
       live: rt?.live ?? null,
       recording: rec
         ? {
@@ -153,34 +164,69 @@ export class LiveService extends EventEmitter {
           }
         : null,
       lastCheckedAt: r.last_checked_at,
-      lastError: r.last_error
+      lastError: r.last_error,
+      modality: (MODALITY_IDS as string[]).includes(r.modality ?? '') ? (r.modality as Modality) : null
     }
   }
 
   async add(platform: Platform, input: string): Promise<ChannelState> {
-    const parsed = parseChannelInput(platform, input)
+    let parsed = parseChannelInput(platform, input)
     if (!parsed) throw new Error('Nome ou link de canal inválido.')
+    // YouTube: o mesmo canal pode vir como @, id "UC…" ou link antigo; guarda sempre o @ (ou o id, se não tiver @)
+    let yt: YoutubeChannel | null = null
+    if (parsed.platform === 'youtube') {
+      yt = await youtubeChannelInfo(parsed.login)
+      if (!yt) throw new Error(`Canal "${parsed.login}" não encontrado no YouTube.`)
+      parsed = { platform: 'youtube', login: yt.login }
+    }
     const exists = this.db.prepare('SELECT id, origin FROM channels WHERE platform = ? AND login = ?').get(parsed.platform, parsed.login) as
       | { id: number; origin: string }
       | undefined
     if (exists?.origin === 'watch') throw new Error('Esse canal já está na lista.')
     if (exists) {
       // Já existia por causa de um VOD importado: passa a ser vigiado
-      this.db.prepare(`UPDATE channels SET origin = 'watch', enabled = 1 WHERE id = ?`).run(exists.id)
+      this.db.prepare(`UPDATE channels SET origin = 'watch', enabled = 1, record = 0 WHERE id = ?`).run(exists.id)
       const row = this.db.prepare('SELECT * FROM channels WHERE id = ?').get(exists.id) as unknown as ChannelRow
       this.log.info('canais', `Canal adicionado: ${row.display_name ?? row.login} (${parsed.platform}).`)
       void this.poll()
       return this.state(row)
     }
     // Confere se o canal existe antes de salvar
-    const info = parsed.platform === 'twitch' ? (await twitchStatus([parsed.login])).get(parsed.login) : await kickStatus(parsed.login)
-    if (!info) throw new Error(`Canal "${parsed.login}" não encontrado na ${parsed.platform === 'twitch' ? 'Twitch' : 'Kick'}.`)
+    const info = yt ?? (parsed.platform === 'twitch' ? (await twitchStatus([parsed.login])).get(parsed.login) : await kickStatus(parsed.login))
+    if (!info) throw new Error(`Canal "${parsed.login}" não encontrado ${parsed.platform === 'twitch' ? 'na Twitch' : 'na Kick'}.`)
     const row = this.db
-      .prepare(`INSERT INTO channels(platform, login, display_name, avatar_url, created_at) VALUES (?, ?, ?, ?, ?) RETURNING *`)
+      .prepare(`INSERT INTO channels(platform, login, display_name, avatar_url, record, created_at) VALUES (?, ?, ?, ?, 0, ?) RETURNING *`)
       .get(parsed.platform, info.login, info.displayName, info.avatarUrl, Date.now()) as unknown as ChannelRow
     this.log.info('canais', `Canal adicionado: ${info.displayName} (${parsed.platform}).`)
     void this.poll()
     return this.state(row)
+  }
+
+  /**
+   * "Todos": procura um nome na Twitch, na Kick e no YouTube ao mesmo tempo e diz onde ele existe
+   * (e se já está na lista). Uma plataforma que falhar só fica de fora.
+   */
+  async lookup(name: string): Promise<ChannelMatch[]> {
+    const checks: Promise<ChannelMatch | null>[] = (['twitch', 'kick', 'youtube'] as Platform[]).map(async (platform) => {
+      const p = parseChannelInput(platform, name)
+      if (!p) return null
+      try {
+        const info =
+          platform === 'twitch'
+            ? (await twitchStatus([p.login])).get(p.login)
+            : platform === 'kick'
+              ? await kickStatus(p.login)
+              : await youtubeChannelInfo(p.login).then(async (c) => (c ? { ...c, live: (await youtubeStatus(c.login).catch(() => null))?.live ?? null } : null))
+        if (!info) return null
+        // O id "UC…" do YouTube diferencia maiúsculas; os outros logins são minúsculos
+        const login = platform === 'youtube' ? info.login : info.login.toLowerCase()
+        const already = !!this.db.prepare(`SELECT 1 FROM channels WHERE platform = ? AND login = ? AND origin = 'watch'`).get(platform, login)
+        return { platform, login, displayName: info.displayName ?? login, avatarUrl: info.avatarUrl ?? null, live: !!info.live, already }
+      } catch {
+        return null
+      }
+    })
+    return (await Promise.all(checks)).filter((x): x is ChannelMatch => !!x)
   }
 
   async remove(id: number): Promise<void> {
@@ -197,11 +243,43 @@ export class LiveService extends EventEmitter {
     this.emit('lives')
   }
 
+  /** Vigiar: desligado, o app para de checar o canal (e de gravar). */
   async setEnabled(id: number, enabled: boolean): Promise<void> {
-    this.db.prepare('UPDATE channels SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
-    if (!enabled) await this.stopRecording(id, 'ended')
+    if (enabled) this.db.prepare('UPDATE channels SET enabled = 1 WHERE id = ?').run(id)
+    else this.db.prepare('UPDATE channels SET enabled = 0, record = 0 WHERE id = ?').run(id)
+    if (!enabled) {
+      await this.stopRecording(id, 'ended')
+      // Sem vigiar, o app não checa mais o canal: não pode continuar mostrando "ao vivo" com o dado velho
+      const rt = this.rt.get(id)
+      if (rt) rt.live = null
+    }
     this.emitSoon()
     if (enabled) void this.poll()
+  }
+
+  /** Gravar quando estiver ao vivo: ligar também passa a vigiar; com a live no ar, começa na hora. */
+  async setRecord(id: number, record: boolean): Promise<void> {
+    if (record) this.db.prepare('UPDATE channels SET record = 1, enabled = 1 WHERE id = ?').run(id)
+    else {
+      this.db.prepare('UPDATE channels SET record = 0 WHERE id = ?').run(id)
+      await this.stopRecording(id, 'ended')
+    }
+    const r = this.db.prepare('SELECT display_name, login FROM channels WHERE id = ?').get(id) as { display_name: string | null; login: string } | undefined
+    if (r) this.log.info('canais', `${r.display_name ?? r.login}: ${record ? 'vai gravar quando estiver ao vivo' : 'só vigiando (sem gravar)'}.`)
+    // Já se sabe que está ao vivo: começa agora, sem esperar a próxima checagem
+    const rt = this.rt.get(id)
+    if (record && rt?.live && !rt.recording) this.startRecording(this.db.prepare('SELECT * FROM channels WHERE id = ?').get(id) as unknown as ChannelRow, rt)
+    this.emitSoon()
+    if (record) void this.poll()
+  }
+
+  /** Fixa a modalidade do canal (null = automática pela categoria da live). */
+  setModality(id: number, modality: Modality | null): void {
+    const m = modality && (MODALITY_IDS as string[]).includes(modality) ? modality : null
+    this.db.prepare('UPDATE channels SET modality = ? WHERE id = ?').run(m, id)
+    const r = this.db.prepare('SELECT display_name, login FROM channels WHERE id = ?').get(id) as { display_name: string | null; login: string } | undefined
+    if (r) this.log.info('canais', `${r.display_name ?? r.login}: modalidade ${m ? MODALITIES[m].label : 'automática (pela categoria)'}.`)
+    this.emitSoon()
   }
 
   checkNow(): Promise<void> {
@@ -261,6 +339,14 @@ export class LiveService extends EventEmitter {
         }
         await sleep(400)
       }
+      for (const r of rows.filter((x) => x.platform === 'youtube')) {
+        try {
+          this.applyStatus(r, await youtubeStatus(r.login), null, null, now)
+        } catch (e) {
+          this.markError(r, (e as Error).message, now)
+        }
+        await sleep(400)
+      }
     } finally {
       this.polling = false
       this.emitSoon()
@@ -274,25 +360,30 @@ export class LiveService extends EventEmitter {
 
   private applyStatus(
     r: ChannelRow,
-    info: { displayName: string; avatarUrl: string | null; live: LiveInfo | null } | null,
+    info: { displayName: string | null; avatarUrl: string | null; live: LiveInfo | null } | null,
     playbackUrl: string | null,
     kickChannelId: number | null,
     now: number
   ): void {
     if (!info) return this.markError(r, 'Canal não encontrado.', now)
     this.db
-      .prepare('UPDATE channels SET display_name = ?, avatar_url = ?, last_checked_at = ?, last_error = NULL WHERE id = ?')
+      // Nome e foto só trocam quando vieram (a página da live do YouTube não traz a foto do canal)
+      .prepare('UPDATE channels SET display_name = COALESCE(?, display_name), avatar_url = COALESCE(?, avatar_url), last_checked_at = ?, last_error = NULL WHERE id = ?')
       .run(info.displayName, info.avatarUrl, now, r.id)
-    r.last_error = r.last_error?.startsWith('Para gravar a Twitch') ? r.last_error : null
+    r.last_error = r.last_error?.startsWith('Para gravar ') ? r.last_error : null
+    // Já checado antes nesta sessão (na primeira checagem ao abrir o app não avisa)
+    const known = this.rt.has(r.id)
     const rt = this.rt.get(r.id) ?? { live: null, playbackUrl: null, kickChannelId: null, recording: null }
     this.rt.set(r.id, rt)
     const wasLive = !!rt.live
     rt.live = info.live
     rt.playbackUrl = playbackUrl
     if (kickChannelId) rt.kickChannelId = kickChannelId
-    const name = info.displayName
+    const name = info.displayName ?? r.display_name ?? r.login
     const s = this.settings().recorder
 
+    // Só vigiando: avisa que entrou ao vivo (quem grava avisa ao começar a gravação)
+    if (info.live && !wasLive && known && !r.record) this.emit('wentLive', { name, title: info.live.title, game: info.live.game })
     if (info.live && !wasLive) this.log.info('ao vivo', `${name} entrou ao vivo: ${info.live.title || 'sem título'}${info.live.game ? ` (${info.live.game})` : ''}.`)
 
     const rec = rt.recording
@@ -309,7 +400,7 @@ export class LiveService extends EventEmitter {
           if (noteGame(this.db, rec.liveId, now, game)) this.log.info('ao vivo', `${name} trocou de categoria: ${rec.game ?? 'sem categoria'} → ${game ?? 'sem categoria'}.`)
           rec.game = game
         }
-      } else if (!info.live.isRerun || s.recordReruns) this.startRecording(r, rt)
+      } else if (r.record && (!info.live.isRerun || s.recordReruns)) this.startRecording(r, rt)
     } else if (rec) {
       rec.offlineSince ??= now
       if (now - rec.offlineSince >= s.offlineGraceSeconds * 1000) {
@@ -332,8 +423,8 @@ export class LiveService extends EventEmitter {
     // A Twitch costura anúncios no vídeo (fMP4 com EXT-X-DISCONTINUITY/EXT-X-MAP diferentes);
     // o ffmpeg copiando direto do link mistura os parâmetros do anúncio com os da live e corrompe
     // todos os quadros (medido em 2026-11-16). Só o Streamlink, com --twitch-disable-ads, grava certo.
-    if (r.platform === 'twitch' && !tools.streamlink) {
-      const msg = 'Para gravar a Twitch é preciso o Streamlink (sem ele o vídeo sai corrompido pelos anúncios). Veja em Sistema.'
+    if (r.platform !== 'kick' && !tools.streamlink) {
+      const msg = r.platform === 'twitch' ? 'Para gravar a Twitch é preciso o Streamlink (sem ele o vídeo sai corrompido pelos anúncios). Veja em Sistema.' : 'Para gravar o YouTube é preciso o Streamlink. Veja em Sistema.'
       if (r.last_error !== msg) {
         this.db.prepare('UPDATE channels SET last_error = ? WHERE id = ?').run(msg, r.id)
         this.log.error('gravador', `${r.display_name ?? r.login}: ${msg}`)
@@ -394,7 +485,7 @@ export class LiveService extends EventEmitter {
       bytes,
       chatMessages: chatCount,
       // Twitch usa Streamlink; Kick grava direto com ffmpeg (escolhendo a resolução)
-      engine: r.platform === 'twitch' && tools.streamlink ? 'streamlink' : 'ffmpeg',
+      engine: r.platform !== 'kick' && tools.streamlink ? 'streamlink' : 'ffmpeg',
       resolution: null,
       restarts: prev?.recorder_restarts ?? 0,
       lastError: null,
@@ -404,7 +495,7 @@ export class LiveService extends EventEmitter {
       offlineSince: null,
       nextSeq,
       done: Promise.resolve(),
-      kickChat: null,
+      chatPoller: null,
       game: live.game ?? null
     }
     rt.recording = rec
@@ -414,7 +505,7 @@ export class LiveService extends EventEmitter {
     }
     if (r.platform === 'kick' && this.settings().recorder.recordChat && rt.kickChannelId) {
       let warned = false
-      rec.kickChat = new KickChatPoller(
+      const poller = new KickChatPoller(
         rt.kickChannelId,
         (msgs) => {
           for (const m of msgs) this.chatBuffer.push({ liveId: rec.liveId, msg: { channel: r.login, time: m.time, user: m.user, text: m.text, emotes: m.emotes } })
@@ -425,9 +516,26 @@ export class LiveService extends EventEmitter {
           warned = true
         }
       )
-      rec.kickChat.start()
+      rec.chatPoller = poller
+      poller.start()
     }
-    this.log.info('gravador', `Gravando ${r.display_name ?? r.login} em pedaços de ${this.settings().recorder.segmentSeconds} s (${rec.engine}).`)
+    if (r.platform === 'youtube' && this.settings().recorder.recordChat) {
+      let warned = false
+      const poller = new YoutubeChatPoller(
+        live.streamId,
+        (msgs) => {
+          for (const m of msgs) this.chatBuffer.push({ liveId: rec.liveId, msg: { channel: r.login, time: m.time, user: m.user, text: m.text, emotes: m.emotes } })
+          rec.chatMessages += msgs.length
+        },
+        (e) => {
+          if (!warned) this.log.warn('chat', `${r.display_name ?? r.login}: chat do YouTube com problema (${e.message}); tentando de novo.`)
+          warned = true
+        }
+      )
+      rec.chatPoller = poller
+      poller.start()
+    }
+    this.log.info('gravador', `Gravando ${r.display_name ?? r.login} em pedaços de ${recordSegmentSeconds(this.settings())} s (${rec.engine}).`)
     this.emit('recordingStarted', { liveId, name: r.display_name ?? r.login, title: live.title, resumed: !!prev })
     rec.done = this.recordLoop(r, rt, rec, tools)
     this.emitSoon()
@@ -439,10 +547,11 @@ export class LiveService extends EventEmitter {
       const s = this.settings().recorder
       const recorder = new SegmentRecorder({
         platform: r.platform,
-        channelUrl: channelUrl(r.platform, r.login),
+        // YouTube: o link da própria live (o /live do canal pode apontar para outra transmissão)
+        channelUrl: r.platform === 'youtube' && rt.live ? youtubeWatchUrl(rt.live.streamId) : channelUrl(r.platform, r.login),
         playbackUrl: rt.playbackUrl,
         dir: rec.dir,
-        segmentSeconds: s.segmentSeconds,
+        segmentSeconds: recordSegmentSeconds(this.settings()),
         quality: s.quality,
         startSeq: rec.nextSeq,
         // Identifica o CSV desta execução; único mesmo depois de reabrir o app
@@ -490,7 +599,7 @@ export class LiveService extends EventEmitter {
     const rec = rt?.recording
     if (!rt || !rec) return
     rec.stopRequested = true
-    rec.kickChat?.stop()
+    rec.chatPoller?.stop()
     await rec.recorder?.stop()
     await rec.done
     this.flushChat()

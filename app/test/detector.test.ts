@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BUCKET_S, classifyMessage, detectMoments, findPeaks, rollingBaseline, type Bucket } from '../src/main/detector'
+import { BUCKET_S, classifyMessage, DEFAULT_PARAMS, detectMoments, findPeaks, rollingBaseline, type Bucket } from '../src/main/detector'
 import { LevelMeter } from '../src/main/audio'
 
 const T0 = Date.UTC(2026, 10, 16, 20, 0, 0)
@@ -115,5 +115,17 @@ describe('LevelMeter', () => {
     expect(a.rmsDb).toBeLessThan(-2.5)
     expect(a.peakDb).toBeGreaterThan(-0.1)
     expect(b.rmsDb).toBe(-90)
+  })
+})
+
+describe('weights by modality', () => {
+  it('a per-moment multiplier changes the score of the moment', () => {
+    const b = live(60, [{ atS: 1800, chat: 12, laughs: 3 }])
+    const base = detectMoments(b, { ...DEFAULT_PARAMS, minScore: 1 })
+    const more = detectMoments(b, { ...DEFAULT_PARAMS, minScore: 1, weightAt: () => ({ chat: 1.5, audio: 1 }) })
+    const off = detectMoments(b, { ...DEFAULT_PARAMS, minScore: 1, weightAt: () => ({ chat: 0, audio: 1 }) })
+    expect(base).toHaveLength(1)
+    expect(more[0].score).toBeGreaterThan(base[0].score)
+    expect(off).toEqual([])
   })
 })

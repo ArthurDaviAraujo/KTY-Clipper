@@ -3,7 +3,7 @@
  * Funções puras: o pedido HTTP fica em gemini.ts.
  */
 
-import { MODALITIES, modalityOf } from '../../shared/modality'
+import { MODALITIES, modalityOf, type Modality } from '../../shared/modality'
 
 export const CATEGORIES = ['engraçado', 'ação', 'falha', 'jogada', 'reação', 'história', 'polêmica', 'talento', 'informação', 'fofo', 'outro'] as const
 export type Category = (typeof CATEGORIES)[number]
@@ -11,16 +11,40 @@ export type Category = (typeof CATEGORIES)[number]
 export interface MomentForAi {
   id: number
   durationS: number
+  /** Janela de fala mostrada à IA (s) e onde o lance detectado fica dentro dela */
+  windowS?: number
+  fromS?: number
+  toS?: number
+  peakS?: number
   /** Categoria da live no instante do momento (o streamer pode trocar de jogo no meio) */
   game: string | null
+  /** Modalidade fixada no canal; sem ela, vem da categoria */
+  modality?: Modality | null
   reasons: string[]
   /** Fala do streamer no trecho, com segundos relativos ao início do clipe: "[3s] texto" */
   speech: string
   chat: string[]
 }
 
+/** Nota por partes (a soma vira a nota da IA): o que faz um corte prender quem nunca viu o canal */
+export interface ScoreParts {
+  /** Os 3 primeiros segundos prendem? (0–30) */
+  gancho: number
+  /** Tem desfecho claro que paga a expectativa? (0–30) */
+  desfecho: number
+  /** Reação forte: riso, grito, susto, raiva (0–20) */
+  emocao: number
+  /** Dá vontade de mandar para alguém ou comentar? (0–20) */
+  compartilhavel: number
+}
+
 export interface AiVerdict {
   id: number
+  /** Raciocínio curto antes da decisão: o que aconteceu, onde está o gancho e onde está o desfecho */
+  analise?: string
+  /** O que prende nos primeiros segundos do corte */
+  gancho?: string
+  notas?: ScoreParts
   keep: boolean
   score: number
   category: Category
@@ -28,6 +52,9 @@ export interface AiVerdict {
   title_en: string
   reason: string
   hashtags: string[]
+  /** Começo e fim do corte escolhidos pela IA, em segundos dentro da janela de fala */
+  clip_start?: number
+  clip_end?: number
 }
 
 export const REVIEW_SCHEMA = {
@@ -39,15 +66,27 @@ export const REVIEW_SCHEMA = {
         type: 'OBJECT',
         properties: {
           id: { type: 'INTEGER' },
+          analise: { type: 'STRING' },
+          gancho: { type: 'STRING' },
+          notas: {
+            type: 'OBJECT',
+            properties: { gancho: { type: 'INTEGER' }, desfecho: { type: 'INTEGER' }, emocao: { type: 'INTEGER' }, compartilhavel: { type: 'INTEGER' } },
+            required: ['gancho', 'desfecho', 'emocao', 'compartilhavel'],
+            propertyOrdering: ['gancho', 'desfecho', 'emocao', 'compartilhavel']
+          },
           keep: { type: 'BOOLEAN' },
           score: { type: 'INTEGER' },
           category: { type: 'STRING', enum: [...CATEGORIES] },
           title_pt: { type: 'STRING' },
           title_en: { type: 'STRING' },
           reason: { type: 'STRING' },
-          hashtags: { type: 'ARRAY', items: { type: 'STRING' } }
+          hashtags: { type: 'ARRAY', items: { type: 'STRING' } },
+          clip_start: { type: 'NUMBER' },
+          clip_end: { type: 'NUMBER' }
         },
-        required: ['id', 'keep', 'score', 'category', 'title_pt', 'title_en', 'reason', 'hashtags']
+        required: ['id', 'analise', 'gancho', 'notas', 'keep', 'score', 'category', 'title_pt', 'title_en', 'reason', 'hashtags', 'clip_start', 'clip_end'],
+        // A análise vem primeiro: a IA pensa antes de decidir (o Gemini respeita esta ordem)
+        propertyOrdering: ['id', 'analise', 'gancho', 'notas', 'clip_start', 'clip_end', 'keep', 'score', 'category', 'title_pt', 'title_en', 'reason', 'hashtags']
       }
     }
   },
@@ -66,19 +105,62 @@ Cada momento traz a categoria da live naquele instante e a modalidade dela. Julg
 - criativo: performance marcante, erro engraçado, reação forte do chat.
 Se o momento foi clipado por espectadores ou o streamer pediu clipe, isso é forte indício de que algo aconteceu:
 mantenha (keep=true) a menos que a fala e o chat mostrem claramente que não houve nada, e capriche no título a partir do que dá para entender.
-Para cada um decida se vira um bom clipe sozinho, sem contexto da live:
-- keep=false para trecho em que nada acontece, tela de espera, propaganda, leitura de doação sem graça, ou quando não dá para entender o que aconteceu. Em live de conversa, conversa boa não é motivo para descartar.
-- score de 0 a 100: potencial de prender quem nunca viu o canal (gancho nos primeiros segundos, reação forte, humor, lance absurdo, frase marcante).
-- title_pt: título curto em português do Brasil (até 60 caracteres), chamativo mas fiel ao que aconteceu, sem inventar.
-- title_en: o mesmo título em inglês.
-- reason: uma frase em português explicando a decisão.
-- hashtags: 3 a 5, sem o #, ligadas ao jogo ou assunto e ao tipo de momento.
-A transcrição é automática e pode ter erros; o chat pode estar em outro idioma. Responda só com o JSON pedido.`
 
-/** "Just Chatting (conversa)"; sem categoria: "desconhecida (julgue pelo conteúdo)". */
-export function categoryLine(game: string | null): string {
-  const m = modalityOf(game)
-  return m ? `${game} (${MODALITIES[m].label})` : 'desconhecida (julgue pelo conteúdo)'
+Pense como os editores dos canais de cortes que mais crescem: quem vê o corte NUNCA viu o canal e decide em 1 a 3 segundos se fica.
+O corte que viraliza tem GANCHO (prende logo de cara), TENSÃO (dá vontade de saber o que vem) e DESFECHO (paga o que o começo prometeu), e funciona sozinho.
+Siga estes passos para cada momento e escreva o resumo deles em "analise" ANTES de decidir o resto:
+1. O que aconteceu: pela fala e pelo chat, conte em uma frase o fato (quem fez o quê). O chat é o termômetro: "KKKK", "CLIPA", "????", "F", muitos emojis
+   ou spam de uma palavra mostram onde foi o pico e qual foi a emoção. Se não dá para dizer o que aconteceu, é keep=false (menos com clipe da comunidade ou pedido de clipe).
+2. Gancho: escolha o clip_start para que os 3 primeiros segundos já tenham algo forte. Entre no meio da ação, nunca no preparo lento:
+   - jogo/esporte/IRL: comece pouco antes do lance ou já na reação (a consequência pode vir primeiro), com só o contexto mínimo para entender;
+   - conversa: comece na primeira palavra da pergunta, da frase polêmica ou do começo da história, sem cumprimento, "então…", "pera aí" ou silêncio.
+   Escreva em "gancho" o que prende nesses primeiros segundos (a frase dita ou a situação).
+3. Desfecho: escolha o clip_end logo depois do ponto alto e da reação ao lance (riso, grito, comentário do streamer). Corte antes de a conversa esfriar:
+   terminar no desfecho faz a pessoa rever o corte. Nunca termine antes do ponto alto nem no meio de uma frase.
+4. Teste do estranho: alguém que nunca viu o canal entende e se importa? Piada interna que depende de horas de live, papo morno,
+   tela de espera, propaganda, leitura de doação sem graça: keep=false. Em live de conversa, conversa boa não é motivo para descartar.
+5. Notas (somadas viram o score de 0 a 100): gancho 0–30 (os primeiros segundos prendem?), desfecho 0–30 (tem resolução clara?),
+   emocao 0–20 (reação forte: riso, susto, raiva, choque), compartilhavel 0–20 (dá vontade de mandar para alguém ou comentar: polêmica, absurdo, frase marcante, "você decide").
+   Seja exigente: um corte bom de verdade passa de 70; um mediano fica perto de 50.
+6. Título e hashtags (veja as regras abaixo).
+Duração: cortes que viralizam têm em geral de 40 a 75 s. O TikTok só paga vídeos de 60 s ou mais: se a história completa passa de 60 s, mantenha;
+qualquer corte pode ir até 150 s se a história pedir (conversa até 120 s). Nunca encha com conversa morna antes ou depois. O corte precisa conter o lance detectado.
+
+Campos:
+- analise: 1 a 3 frases curtas com os passos 1 a 4.
+- gancho: o que prende nos primeiros segundos.
+- notas: { gancho, desfecho, emocao, compartilhavel }; score = a soma.
+- keep: se vira um bom clipe sozinho.
+- title_pt: no estilo dos cortes que mais viralizam no TikTok e no Shorts (análise de cortes de canais brasileiros):
+  EM CAIXA ALTA, de 35 a 55 caracteres, com o assunto logo no começo (quem e o quê), uma afirmação forte ou uma pergunta, terminando com "!" ou "?" e 1 emoji que combine
+  (😱 susto/absurdo, 😂 engraçado, 🤔 dúvida/opinião, 🔥 lance incrível, 💰 dinheiro). Cite o nome do streamer, do convidado ou do jogo quando ajudar.
+  Uma frase marcante dita no trecho, entre aspas, também funciona. Exemplos: "GAULES PERDEU TUDO NO ÚLTIMO ROUND! 😱", "O JOGO NOVO VAI TER MAIS DE 50 HORAS DE CAMPANHA? 🤔",
+  "“ISSO NÃO É NORMAL” O STREAMER TRAVOU COM O FINAL! 😱".
+  Chamativo, mas fiel: prometer o que o trecho não mostra faz a pessoa sair e derruba o corte. Em jogo lançado há pouco, não conte reviravolta da história no título (spoiler).
+- title_en: o mesmo título em inglês, no mesmo estilo.
+- reason: uma frase em português explicando a decisão.
+- hashtags: 5, sem o #: 2 ou 3 específicas (jogo, streamer, assunto) e 2 ou 3 gerais que trazem público (ex.: games, ps5, podcast, cortes, humor).
+- clip_start e clip_end: em segundos da fala mostrada (a janela vai de 0 até o fim indicado), pelos passos 2 e 3.
+A transcrição é automática e pode ter erros; o chat pode estar em outro idioma.
+Devolva UM item para CADA momento recebido, com o mesmo id (mesmo os que você descartar, com keep=false). Responda só com o JSON pedido.`
+
+/**
+ * Nota da IA a partir das partes (gancho 30, desfecho 30, emoção 20, compartilhável 20).
+ * Sem partes válidas (resposta antiga ou de uma reserva que não mandou), fica o score que ela deu.
+ */
+export function rubricScore(v: Pick<AiVerdict, 'score' | 'notas'>): number {
+  const n = v.notas
+  const part = (x: unknown, max: number) => (typeof x === 'number' && Number.isFinite(x) ? Math.min(max, Math.max(0, Math.round(x))) : null)
+  const p = n ? [part(n.gancho, 30), part(n.desfecho, 30), part(n.emocao, 20), part(n.compartilhavel, 20)] : []
+  if (p.length === 4 && p.every((x) => x != null)) return p.reduce<number>((a, x) => a + (x ?? 0), 0)
+  return Math.min(100, Math.max(0, Math.round(Number(v.score) || 0)))
+}
+
+/** "Just Chatting (conversa)"; sem categoria: "desconhecida (julgue pelo conteúdo)". A modalidade fixada no canal vale mais que a categoria. */
+export function categoryLine(game: string | null, fixed?: Modality | null): string {
+  const m = fixed ?? modalityOf(game)
+  if (!m) return 'desconhecida (julgue pelo conteúdo)'
+  return `${game ?? 'sem categoria'} (${MODALITIES[m].label}${fixed ? ', definida para o canal' : ''})`
 }
 
 export function buildReviewPrompt(ctx: { channel: string; liveTitle: string }, moments: MomentForAi[]): string {
@@ -87,7 +169,10 @@ export function buildReviewPrompt(ctx: { channel: string; liveTitle: string }, m
     .map(
       (m) =>
         `### Momento ${m.id} (${Math.round(m.durationS)} s)\n` +
-        `Categoria: ${categoryLine(m.game)}\n` +
+        (m.windowS != null
+          ? `Fala mostrada: de 0 a ${Math.round(m.windowS)} s. O lance detectado fica entre ${Math.round(m.fromS ?? 0)} s e ${Math.round(m.toS ?? 0)} s (pico em ${Math.round(m.peakS ?? 0)} s).\n`
+          : '') +
+        `Categoria: ${categoryLine(m.game, m.modality)}\n` +
         `Sinais: ${m.reasons.join('; ') || 'nenhum'}\n` +
         `Fala do streamer:\n${m.speech.trim() || '(sem fala reconhecida)'}\n` +
         `Chat logo depois:\n${m.chat.length ? m.chat.map((c) => `- ${c}`).join('\n') : '(sem chat)'}`

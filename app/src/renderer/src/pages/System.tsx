@@ -1,4 +1,4 @@
-import { CheckCircle2, FolderOpen, Play, RefreshCw, RotateCcw, Trash2, X, XCircle } from 'lucide-react'
+import { CheckCircle2, FolderInput, FolderOpen, Play, RefreshCw, RotateCcw, Trash2, X, XCircle } from 'lucide-react'
 import { FAMILY_LABEL } from '../../../shared/encoders'
 import type { EncoderFamily, JobStatus } from '../../../shared/types'
 import type { AppState } from '../state'
@@ -148,6 +148,17 @@ export function SystemPanel({ state }: { state: AppState }) {
             </div>
             <Button variant="ghost" onClick={() => void window.api.openPath(info.dataDir)}>
               <FolderOpen size={14} /> Abrir
+            </Button>
+          </Card>
+          <Card className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Trazer dados de outra pasta</p>
+              <p className="text-xs text-muted">
+                Canais, lives, clipes, ajustes e perfis de outra instalação (ou do modo de desenvolvimento). Os daqui são trocados e o app reinicia.
+              </p>
+            </div>
+            <Button variant="ghost" onClick={() => void window.api.importData().catch((e) => alert(String(e).replace(/^Error: /, '').replace(/^.*?Error: /, '')))}>
+              <FolderInput size={14} /> Trazer dados…
             </Button>
           </Card>
         </Section>

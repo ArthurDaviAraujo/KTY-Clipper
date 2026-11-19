@@ -6,7 +6,7 @@ import type { ClipLayout, QualityPreset, Rect } from './types'
  */
 
 export const LAYOUTS: { id: ClipLayout; label: string; hint: string }[] = [
-  { id: 'split', label: 'Jogo + facecam', hint: 'Câmera do streamer em cima e o jogo embaixo. Marque a facecam do canal uma vez.' },
+  { id: 'split', label: 'Facecam + jogo', hint: 'Câmera do streamer em cima e o jogo embaixo. A KaTY acha a facecam sozinha (ou marque uma vez por canal).' },
   { id: 'blur', label: 'Tela inteira', hint: 'O vídeo inteiro no meio, com o próprio vídeo desfocado no fundo e o título em cima.' },
   { id: 'crop', label: 'Recorte do centro', hint: 'Corta uma faixa vertical do meio da tela (perde as laterais).' },
   { id: 'full', label: 'Horizontal', hint: '16:9 como a live, para vídeos normais do YouTube.' }
@@ -55,7 +55,25 @@ export interface LayoutPlan {
  * Enquadramento do vídeo de origem (src) no tamanho final (W×H).
  * `cropX` (0–1) escolhe de onde sai o recorte na horizontal.
  */
-export function layoutPlan(layout: ClipLayout, src: { w: number; h: number }, out: { W: number; H: number }, facecam: Rect | null, cropX = 0.5): LayoutPlan {
+/**
+ * Posição do recorte (cropX) que deixa `center` (fração da largura do quadro, ex.: o meio da facecam) no meio do clipe.
+ * Conta com fonte 16:9 e saída 9:16, o caso das lives.
+ */
+export function cropXForCenter(center: number, srcAspect = 16 / 9, outAspect = 9 / 16): number {
+  const r = Math.min(1, outAspect / srcAspect)
+  if (r >= 1) return 0.5
+  return Math.round(Math.min(1, Math.max(0, (center - r / 2) / (1 - r))) * 1000) / 1000
+}
+
+export function layoutPlan(
+  layout: ClipLayout,
+  src: { w: number; h: number },
+  out: { W: number; H: number },
+  facecam: Rect | null,
+  cropX = 0.5,
+  /** Altura da facecam em % da tela no "Jogo + facecam" (0 = automático, pela proporção da câmera) */
+  camPct = 0
+): LayoutPlan {
   const { W, H } = out
   const cam = cleanRect(facecam)
   if (layout === 'split' && !cam) layout = 'blur'
@@ -87,13 +105,19 @@ export function layoutPlan(layout: ClipLayout, src: { w: number; h: number }, ou
     const fy = pos(cam.y * src.h)
     const fw = even(Math.min(cam.w * src.w, src.w - fx))
     const fh = even(Math.min(cam.h * src.h, src.h - fy))
-    // A câmera ocupa a altura que a proporção dela pede, entre 28% e 42% da tela
-    const topH = even(clamp(W / (fw / fh), H * 0.28, H * 0.42))
+    // A câmera ocupa a altura escolhida nos Ajustes; no automático, a que a proporção dela pede, entre 28% e 42% da tela
+    const topH = even(camPct > 0 ? (H * clamp(camPct, 25, 50)) / 100 : clamp(W / (fw / fh), H * 0.28, H * 0.42))
     const gameH = H - topH
     const cw = even(Math.min(src.w, (src.h * W) / gameH))
     const ch = even(Math.min(src.h, (cw * gameH) / W))
-    const gx = Math.min(pos((src.w - cw) * px), src.w - cw)
+    let gx = Math.min(pos((src.w - cw) * px), src.w - cw)
     const gy = pos((src.h - ch) / 2)
+    // O jogo embaixo não pode mostrar a facecam de novo: se o recorte encosta nela, ele foge para o outro lado (quando cabe)
+    if (gx < fx + fw && gx + cw > fx) {
+      const camRight = fx + fw / 2 > src.w / 2
+      const alt = camRight ? fx - cw : fx + fw
+      if (alt >= 0 && alt + cw <= src.w) gx = pos(alt)
+    }
     return {
       layout,
       graph:
@@ -178,15 +202,88 @@ export function clipRange(
     b = a + max
   }
   if (b - a < min) {
-    const grow = (min - (b - a)) / 2
-    a -= grow
-    b += grow
+    // Falta duração: cresce mais para trás (o contexto vem antes do lance, como numa história em conversa)
+    const grow = min - (b - a)
+    a -= grow * 0.65
+    b += grow * 0.35
   }
   if (avail) {
     a = Math.max(a, avail.fromUtc)
     b = Math.min(b, avail.toUtc)
+    // Se um lado bateu no limite do que foi gravado, completa o mínimo pelo outro lado
+    if (b - a < min) {
+      b = Math.min(avail.toUtc, b + (min - (b - a)))
+      a = Math.max(avail.fromUtc, a - (min - (b - a)))
+    }
   }
   return { fromUtc: Math.round(a), toUtc: Math.round(b) }
+}
+
+/** Palavra falada em hora real (ms), como vem do Whisper */
+export interface SpokenWord {
+  t: number
+  end: number
+}
+
+/**
+ * Encaixa o começo e o fim do corte na fala: não começa nem termina no meio de uma palavra
+ * e, se a frase continua logo em seguida (pausa curta), vai até o fim dela. Anda no máximo `maxShiftMs` para cada lado.
+ */
+export function snapToSpeech(fromUtc: number, toUtc: number, words: SpokenWord[], maxShiftMs = 2500): { fromUtc: number; toUtc: number } {
+  const ws = [...words].filter((w) => w.end > w.t).sort((a, b) => a.t - b.t)
+  const JOIN = 350
+  let a = fromUtc
+  let b = toUtc
+  // Começo: volta para o início da palavra cortada e das palavras grudadas antes dela (mesma frase)
+  let i = ws.findIndex((w) => w.end > a)
+  if (i >= 0 && ws[i].t < a) {
+    let start = ws[i].t
+    while (i > 0 && start - ws[i - 1].end <= JOIN && fromUtc - ws[i - 1].t <= maxShiftMs) start = ws[--i].t
+    if (fromUtc - start <= maxShiftMs) a = start - 150
+  }
+  // Fim: vai até o fim da palavra cortada e das grudadas depois dela
+  let j = ws.findIndex((w) => w.end >= b)
+  if (j >= 0 && ws[j].t < b) {
+    let end = ws[j].end
+    while (j < ws.length - 1 && ws[j + 1].t - end <= JOIN && ws[j + 1].end - toUtc <= maxShiftMs) end = ws[++j].end
+    if (end - toUtc <= maxShiftMs) b = end + 250
+  }
+  return { fromUtc: Math.round(a), toUtc: Math.round(Math.max(b, a + 1000)) }
+}
+
+/**
+ * Trechos que ficam depois de tirar os silêncios longos de dentro do corte (as pausas entre falas).
+ * Deixa `keepMs` de respiro em cada lado do corte. Com `levels` (volume por segundo), só corta onde
+ * o som também está baixo (em jogo, silêncio de fala pode ser ação na tela).
+ */
+export function silenceCuts(
+  fromUtc: number,
+  toUtc: number,
+  words: SpokenWord[],
+  o: { minGapMs?: number; keepMs?: number; levels?: { t: number; rmsDb: number }[]; quietDb?: number; maxCuts?: number } = {}
+): { fromUtc: number; toUtc: number }[] {
+  const minGap = o.minGapMs ?? 1000
+  const keep = o.keepMs ?? 250
+  const ws = words.filter((w) => w.end > fromUtc && w.t < toUtc).sort((a, b) => a.t - b.t)
+  const quiet = (a: number, b: number) => {
+    if (!o.levels || o.quietDb == null) return true
+    const inGap = o.levels.filter((l) => l.t * 1000 >= a - 500 && l.t * 1000 <= b)
+    return inGap.length > 0 && inGap.every((l) => l.rmsDb < o.quietDb!)
+  }
+  const cuts: [number, number][] = []
+  for (let i = 0; i < ws.length - 1 && cuts.length < (o.maxCuts ?? 30); i++) {
+    const a = ws[i].end + keep
+    const b = ws[i + 1].t - keep
+    if (ws[i + 1].t - ws[i].end >= minGap && b - a >= 300 && quiet(a, b)) cuts.push([a, b])
+  }
+  const out: { fromUtc: number; toUtc: number }[] = []
+  let cur = fromUtc
+  for (const [a, b] of cuts) {
+    if (a > cur) out.push({ fromUtc: Math.round(cur), toUtc: Math.round(a) })
+    cur = b
+  }
+  if (toUtc > cur) out.push({ fromUtc: Math.round(cur), toUtc: Math.round(toUtc) })
+  return out
 }
 
 /** Uma palavra falada, com início e fim em segundos do clipe */
@@ -242,9 +339,32 @@ export interface AssInput {
   W: number
   H: number
   duration: number
-  captions: { words: Word[]; perGroup: number; upper: boolean; color: string; sizePct: number; y: number } | null
-  title: { text: string; y: number; align: 2 | 8; always: boolean } | null
+  captions: {
+    words: Word[]
+    perGroup: number
+    upper: boolean
+    color: string
+    sizePct: number
+    y: number
+    font?: string
+    /** Cor das outras palavras (padrão branco) */
+    baseColor?: string
+    outline?: 'thin' | 'normal' | 'thick'
+  } | null
+  title: {
+    text: string
+    y: number
+    align: 2 | 8
+    always: boolean
+    /** Segundos na tela quando não é o clipe todo (padrão 4; 0 = o clipe todo) */
+    seconds?: number
+    style?: 'white' | 'black' | 'yellow'
+  } | null
 }
+
+/** Caixa do título: cor da letra e do fundo */
+const TITLE_STYLES = { white: ['#101010', '#ffffff'], black: ['#ffffff', '#101010'], yellow: ['#101010', '#ffd400'] } as const
+const OUTLINE_SCALE = { thin: 0.6, normal: 1, thick: 1.6 } as const
 
 /**
  * Legenda ASS para queimar no clipe: blocos curtos com a palavra falada em destaque (cor e um pouco maior)
@@ -254,8 +374,11 @@ export function buildClipAss(o: AssInput): string {
   const short = Math.min(o.W, o.H)
   const capFs = Math.max(16, Math.round((short * (o.captions?.sizePct ?? 7.5)) / 100))
   const titleFs = Math.max(14, Math.round(short * 0.058))
-  const outline = Math.max(2, Math.round(capFs / 11))
+  const outline = Math.max(1, Math.round((capFs / 11) * OUTLINE_SCALE[o.captions?.outline ?? 'normal']))
   const marginH = Math.round(o.W * 0.07)
+  const font = (o.captions?.font ?? 'Segoe UI Black').replace(/,/g, '')
+  const base = assColor(o.captions?.baseColor ?? '#ffffff')
+  const [titleText, titleBox] = TITLE_STYLES[o.title?.style ?? 'white'].map(assColor)
   const head = [
     '[Script Info]',
     'ScriptType: v4.00+',
@@ -266,9 +389,9 @@ export function buildClipAss(o: AssInput): string {
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Cap,Segoe UI Black,${capFs},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,${outline},${Math.round(outline / 2)},5,${marginH},${marginH},0,1`,
-    // Caixa branca (BorderStyle 3: o contorno vira caixa) com texto preto
-    `Style: Title,Segoe UI Black,${titleFs},&H00101010,&H00101010,&H00FFFFFF,&H64000000,-1,0,0,0,100,100,0,0,3,${Math.round(titleFs * 0.35)},0,8,${marginH},${marginH},0,1`,
+    `Style: Cap,${font},${capFs},${base},${base},&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,${outline},${Math.round(outline / 2)},5,${marginH},${marginH},0,1`,
+    // Caixa do título (BorderStyle 3: o contorno vira caixa); branca com letra preta por padrão
+    `Style: Title,Segoe UI Black,${titleFs},${titleText},${titleText},${titleBox},&H64000000,-1,0,0,0,100,100,0,0,3,${Math.round(titleFs * 0.35)},0,8,${marginH},${marginH},0,1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'
@@ -276,7 +399,8 @@ export function buildClipAss(o: AssInput): string {
   const lines: string[] = []
   const cx = Math.round(o.W / 2)
   if (o.title && cleanText(o.title.text)) {
-    const end = o.title.always ? o.duration : Math.min(o.duration, 4)
+    const secs = o.title.seconds ?? 4
+    const end = o.title.always || secs <= 0 ? o.duration : Math.min(o.duration, secs)
     lines.push(`Dialogue: 1,${assTime(0)},${assTime(end)},Title,,0,0,0,,{\\an${o.title.align}\\pos(${cx},${o.title.y})}${cleanText(o.title.text)}`)
   }
   const c = o.captions

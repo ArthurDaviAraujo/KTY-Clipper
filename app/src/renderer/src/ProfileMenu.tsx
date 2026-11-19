@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, Download, Plus, Settings2, Upload } from 'lucide-react'
+import { Check, Plus, Settings2, Sparkles } from 'lucide-react'
 import type { Go } from './App'
 import type { AppState } from './state'
 import { ProfileAvatar, cx } from './ui'
 
 const clean = (e: unknown) => ((e as Error).message ?? String(e)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 
-/** Foto do perfil no canto: trocar de perfil, criar, exportar e importar predefinições. */
+/** Foto do perfil no canto: gerenciar o perfil, trocar, criar e abrir as configurações da KaTY (exportar e importar ficam em Gerenciar perfil). */
 export default function ProfileMenu({ state, go }: { state: AppState; go: Go }) {
   const [open, setOpen] = useState(false)
   const [naming, setNaming] = useState(false)
@@ -83,6 +83,14 @@ export default function ProfileMenu({ state, go }: { state: AppState; go: Go }) 
           )}
 
           <div className="py-1.5">
+            <Item
+              icon={Settings2}
+              label="Gerenciar perfil"
+              onClick={() => {
+                go('settings', { settings: 'perfil' })
+                setOpen(false)
+              }}
+            />
             {naming ? (
               <div className="flex items-center gap-2 px-4 py-1.5">
                 <input
@@ -109,15 +117,14 @@ export default function ProfileMenu({ state, go }: { state: AppState; go: Go }) 
               <Item icon={Plus} label="Novo perfil" onClick={() => setNaming(true)} />
             )}
             <Item
-              icon={Settings2}
-              label="Gerenciar perfil"
+              icon={Sparkles}
+              iconClass="text-gold"
+              label="Configurações da KaTY"
               onClick={() => {
-                go('settings', { settings: 'perfil' })
+                go('settings', { settings: 'ia' })
                 setOpen(false)
               }}
             />
-            <Item icon={Upload} label="Exportar predefinições" onClick={() => void run(() => window.api.exportProfile().then((p) => (p ? 'ok' : null)), 'Predefinições salvas.')} />
-            <Item icon={Download} label="Importar predefinições" onClick={() => void run(() => window.api.importProfile())} />
           </div>
           {msg && <p className="border-t border-white/[0.07] px-4 py-2 text-xs text-muted">{msg}</p>}
         </div>
@@ -126,10 +133,10 @@ export default function ProfileMenu({ state, go }: { state: AppState; go: Go }) 
   )
 }
 
-function Item({ icon: Icon, label, onClick }: { icon: typeof Plus; label: string; onClick: () => void }) {
+function Item({ icon: Icon, label, onClick, iconClass }: { icon: typeof Plus; label: string; onClick: () => void; iconClass?: string }) {
   return (
     <button type="button" onClick={onClick} className="flex w-full items-center gap-2.5 px-4 py-1.5 text-left text-[13px] text-text/90 hover:bg-white/[0.07]">
-      <Icon size={14} className="text-muted" /> {label}
+      <Icon size={14} className={iconClass ?? 'text-muted'} /> {label}
     </button>
   )
 }

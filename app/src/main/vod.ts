@@ -4,7 +4,8 @@ import { dirname, join } from 'path'
 import type { Db } from './db'
 import type { JobContext, JobQueue } from './jobs'
 import type { Logger } from './logs'
-import { SegmentRecorder, resolveHls, type RecorderTools } from './recorder'
+import { SegmentRecorder, resolveHls, resolveYoutube, type RecorderTools } from './recorder'
+import { youtubeChannelInfo, youtubeChatReplayPage, youtubeVideoInfo, youtubeWatchUrl } from './platforms/youtube'
 import { KICK_WINDOW_MS, kickChatPage, kickStatus, kickVodInfo, resolveKickVariant } from './platforms/kick'
 import { nextCommentOffset, twitchVodChapters, twitchVodComments, twitchVodInfo, type VodComment } from './platforms/twitch'
 import { noteGame } from './games'
@@ -120,7 +121,7 @@ export class VodService extends EventEmitter {
   /** Confere o link, cria a entrada na biblioteca e põe a importação na fila. */
   async importVod(url: string, startS?: number | null, endS?: number | null): Promise<LiveRecord> {
     const ref = parseVodInput(url)
-    if (!ref) throw new Error('Link de VOD não reconhecido. Use twitch.tv/videos/… ou kick.com/<canal>/videos/…')
+    if (!ref) throw new Error('Link não reconhecido. Use twitch.tv/videos/…, kick.com/<canal>/videos/… ou um vídeo do YouTube (youtube.com/watch?v=… ou youtu.be/…).')
     const tools = this.tools()
     if (!tools) throw new Error('FFmpeg não encontrado.')
 
@@ -151,6 +152,24 @@ export class VodService extends EventEmitter {
       startedAt = v.createdAt
       durationS = v.lengthSeconds
       stillLive = v.status === 'RECORDING'
+    } else if (ref.platform === 'youtube') {
+      const v = await youtubeVideoInfo(ref.id)
+      if (!v) throw new Error('Vídeo não encontrado no YouTube (pode ser privado, ter sido apagado ou o link está errado).')
+      if (v.isLiveNow) throw new Error('Esta live do YouTube ainda está no ar. Adicione o canal em Canais e ligue "Gravar" para clipar ao vivo.')
+      if (v.isUpcoming) throw new Error('Esta live do YouTube ainda não começou (está agendada).')
+      if (!tools.ytdlp) throw new Error('yt-dlp não encontrado.')
+      sourceUrl = youtubeWatchUrl(v.id)
+      try {
+        await resolveYoutube(tools.ytdlp, sourceUrl, this.settings().recorder.quality)
+      } catch (e) {
+        throw new Error(friendly(e))
+      }
+      const info = await youtubeChannelInfo(v.channel.login).catch(() => null)
+      channel = { login: info?.login ?? v.channel.login, displayName: info?.displayName ?? v.channel.displayName, avatarUrl: info?.avatarUrl ?? null }
+      title = v.title
+      game = v.category
+      startedAt = v.startedAt
+      durationS = v.durationS
     } else {
       const v = await kickVodInfo(ref.id)
       if (!v) throw new Error('VOD não encontrado na Kick (pode ter sido apagado ou o link está errado).')
@@ -217,14 +236,16 @@ export class VodService extends EventEmitter {
     ).id
   }
 
-  private async resolveInput(r: LiveRow): Promise<string> {
+  private async resolveInput(r: LiveRow): Promise<{ video: string; audio: string | null }> {
     const tools = this.tools()!
     const quality = this.settings().recorder.quality
-    if (r.platform === 'twitch') return resolveHls(tools.ytdlp!, r.source_url!, quality)
+    if (r.platform === 'twitch') return { video: await resolveHls(tools.ytdlp!, r.source_url!, quality), audio: null }
+    // YouTube: imagem e som vêm em links separados (os links vencem em algumas horas; cada tentativa pede de novo)
+    if (r.platform === 'youtube') return resolveYoutube(tools.ytdlp!, r.source_url!, quality)
     const v = await kickVodInfo(r.platform_stream_id!)
     if (!v) throw new Error('O VOD da Kick não existe mais.')
     const variant = await resolveKickVariant(v.source, quality)
-    return variant?.url ?? v.source
+    return { video: variant?.url ?? v.source, audio: null }
   }
 
   private async runImport(liveId: number, ctx: JobContext): Promise<unknown> {
@@ -275,7 +296,8 @@ export class VodService extends EventEmitter {
         startSeq,
         run: Date.now(),
         tools: { ...tools, streamlink: null },
-        inputUrl: input,
+        inputUrl: input.video,
+        inputAudioUrl: input.audio ?? undefined,
         seekSeconds: seek,
         durationSeconds: total != null ? total - done : undefined,
         onSegment: (seg) => {
@@ -334,6 +356,7 @@ export class VodService extends EventEmitter {
     this.emitSoon()
     const startS = r.range_start_s ?? 0
     const endS = r.range_end_s ?? r.duration_s ?? Infinity
+    if (r.platform === 'youtube') return this.runYoutubeChat(r, startS, endS, progress, signal)
 
     // Cada plataforma entrega uma página a partir de um segundo do VOD; o avanço no tempo é o mesmo
     type Page = { comments: VodComment[]; hasNext: boolean }
@@ -393,6 +416,66 @@ export class VodService extends EventEmitter {
       const reason = signal.aborted ? (signal.reason as Error)?.message : null
       this.db.prepare(`UPDATE lives SET chat_status = ? WHERE id = ?`).run(reason === 'app-closing' ? 'queued' : 'failed', liveId)
       // Sem o chat completo ainda dá para procurar momentos pelo áudio e pelo chat que veio
+      if (reason !== 'app-closing' && reason !== 'canceled') this.emit('ready', liveId)
+      throw e
+    } finally {
+      this.emitSoon()
+    }
+  }
+
+  /**
+   * Replay do chat de uma live do YouTube que já acabou: páginas em sequência, cada mensagem com o segundo do vídeo.
+   * Vídeo comum (não foi live) não tem chat: segue só com áudio, fala e IA.
+   */
+  private async runYoutubeChat(r: LiveRow, startS: number, endS: number, progress: (v: number) => void, signal: AbortSignal): Promise<unknown> {
+    const liveId = r.id
+    const name = r.display_name ?? r.login
+    try {
+      const v = await youtubeVideoInfo(r.platform_stream_id!, signal)
+      if (!v?.chat) {
+        this.db.prepare(`UPDATE lives SET chat_status = 'done' WHERE id = ?`).run(liveId)
+        this.log.info('importar', `${name}: este vídeo do YouTube não tem replay do chat; os momentos saem do áudio, da fala e da IA.`)
+        this.emit('ready', liveId)
+        return { messages: 0 }
+      }
+      // O replay é rápido de ler: refaz do começo do trecho
+      this.db.prepare('DELETE FROM chat_messages WHERE live_id = ?').run(liveId)
+      const ins = this.db.prepare('INSERT INTO chat_messages(live_id, ts_utc, user, text, emotes) VALUES (?, ?, ?, ?, ?)')
+      const seen = new Set<string>()
+      let continuation: string | null = v.chat.continuation
+      let offset = startS
+      let total = 0
+      while (continuation) {
+        if (signal.aborted) throw signal.reason
+        const page = await youtubeChatReplayPage(v.chat, continuation, offset, signal)
+        const fresh = page.messages.filter((m) => !seen.has(m.id) && m.offsetS >= startS && m.offsetS <= endS)
+        this.db.exec('BEGIN')
+        for (const m of fresh) {
+          seen.add(m.id)
+          ins.run(liveId, r.started_at + m.offsetS * 1000, m.user, m.text, m.emotes)
+        }
+        this.db.exec('COMMIT')
+        total += fresh.length
+        const last = page.messages.at(-1)?.offsetS
+        if (last != null && last > offset) offset = last
+        if (Number.isFinite(endS)) progress(Math.min(0.999, (offset - startS) / Math.max(1, endS - startS)))
+        if (offset > endS) break
+        continuation = page.next
+        if (seen.size > 50_000) seen.clear()
+        await new Promise((res) => setTimeout(res, 150))
+      }
+      this.db.prepare(`UPDATE lives SET chat_status = 'done' WHERE id = ?`).run(liveId)
+      this.log.info('importar', `Chat do vídeo de ${name} (YouTube): ${total} mensagens.`)
+      this.emit('ready', liveId)
+      return { messages: total }
+    } catch (e) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        // sem transação aberta
+      }
+      const reason = signal.aborted ? (signal.reason as Error)?.message : null
+      this.db.prepare(`UPDATE lives SET chat_status = ? WHERE id = ?`).run(reason === 'app-closing' ? 'queued' : 'failed', liveId)
       if (reason !== 'app-closing' && reason !== 'canceled') this.emit('ready', liveId)
       throw e
     } finally {

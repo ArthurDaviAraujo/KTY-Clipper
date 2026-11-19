@@ -2,13 +2,16 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notificati
 import { pathToFileURL } from 'url'
 import { Readable } from 'stream'
 import { setHttpFetch } from './platforms/http'
-import { createReadStream, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
+import { DatabaseSync } from 'node:sqlite'
 import { userInfo } from 'os'
 import { ProfileStore } from './profiles'
-import { dirname, isAbsolute, join } from 'path'
+import { dirname, isAbsolute, join, resolve } from 'path'
 import { openDb, kvGet, kvSet, type Db } from './db'
 import { JobQueue, limitsFor } from './jobs'
 import { Logger } from './logs'
+import { SearchService } from './search'
+import { smartChannelSearch, type ChannelSearchDeps } from './channelSearch'
 import { getTools, toolPath } from './tools'
 import { baseHardware, testEncoders } from './hardware'
 import { diskSpace } from './disk'
@@ -16,16 +19,21 @@ import { LiveService } from './live'
 import { VodService } from './vod'
 import { MomentsService } from './moments'
 import { ClipService } from './render'
+import { AssistantService } from './assistant'
+import { assistantSystem, buildAssistantTools } from './assistantTools'
 import { findWhisperModels } from './speech'
-import { getSecret, setSecret } from './secrets'
+import { getSecret, secretUnreadable, setSecret } from './secrets'
 import { listGeminiModels, pickGeminiModel } from './ai/gemini'
+import { BACKUPS, backupJson, listBackupModels, pickBackupModel, type Backup, type BackupId } from './ai/backups'
 import { programDirs } from './tools'
 
 // Protocolo próprio para as telas mostrarem miniaturas do disco (clipador://miniatura/<id>)
 protocol.registerSchemesAsPrivileged([{ scheme: 'clipador', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
-import { GB, clipsRoot, deleteOldest, recordingsRoot, usageBytes } from './storage'
-import { defaultSettings, mergeSettings, portableSettings, sanitizeSettings, withMachine } from '../shared/settings'
-import type { AiStatus, AppInfo, ClipOptions, ClipRecord, ClipReview, DeepPartial, DiskInfo, HardwareInfo, Platform, Rect, Settings } from '../shared/types'
+import { GB, clipsRoot, deleteOldest, deleteUnused, exportRoot, recordingsRoot, usageBytes } from './storage'
+import { defaultSettings, detectEveryMinutes, mergeSettings, portableSettings, sanitizeSettings, withMachine } from '../shared/settings'
+import type { Modality } from '../shared/modality'
+import type { AiBackupStatus, AiStatus, AppInfo, ClipOptions, ClipRecord, ClipReview, DeepPartial, DiskInfo, HardwareInfo, Platform, Rect, Settings } from '../shared/types'
+import { DISCARDED_AFTER_MS } from '../shared/types'
 
 /**
  * Pasta de dados: em desenvolvimento fica em <projeto>/dados (fora do git);
@@ -33,12 +41,30 @@ import type { AiStatus, AppInfo, ClipOptions, ClipRecord, ClipReview, DeepPartia
  * Usar a pasta do projeto em dev também evita a cópia privada do %APPDATA% criada
  * quando o app é aberto pelo Claude desktop.
  */
-const dataDir = app.isPackaged ? join(app.getPath('userData'), 'dados') : join(dirname(app.getAppPath()), 'dados')
+// CLIPADOR_DADOS: pasta de dados de teste (uma cópia isolada do app, com --user-data-dir próprio, sem mexer na do usuário)
+const dataDir = process.env.CLIPADOR_DADOS
+  ? process.env.CLIPADOR_DADOS
+  : app.isPackaged
+    ? join(app.getPath('userData'), 'dados')
+    : join(dirname(app.getAppPath()), 'dados')
 mkdirSync(dataDir, { recursive: true })
 const dbPath = join(dataDir, 'clipador.db')
 
 let db: Db
 let logger: Logger
+let search: SearchService
+const clipNowPending: { liveId: number; tMs: number }[] = []
+/** Busca de canal com IA: o mesmo Gemini do resto do app */
+const channelSearchDeps = (): ChannelSearchDeps => ({
+  db,
+  log: logger,
+  lookup: (n) => live.lookup(n),
+  backups: aiBackups,
+  gemini: () => {
+    const key = getSecret(db, 'gemini')
+    return key && settings.ai.provider === 'gemini' && settings.ai.geminiModel ? { key, model: settings.ai.geminiModel } : null
+  }
+})
 let queue: JobQueue
 let settings: Settings
 let hardware: HardwareInfo
@@ -46,6 +72,7 @@ let live: LiveService
 let vod: VodService
 let moments: MomentsService
 let clips: ClipService
+let assistant: AssistantService
 let profiles: ProfileStore
 let win: BrowserWindow | null = null
 
@@ -126,7 +153,7 @@ function loadSettings(): Settings {
   const raw = profiles.settingsOf(profiles.activeId()) ?? kvGet<unknown>(db, 'settings') ?? {}
   const s = sanitizeSettings(mergeSettings(defaultSettings(), raw))
   // Pasta salva que não é caminho absoluto volta para o padrão (evita travar o app ao abrir)
-  for (const k of ['recordingsDir', 'clipsDir'] as const) if (s.storage[k] && !isAbsolute(s.storage[k])) s.storage[k] = ''
+  for (const k of ['recordingsDir', 'clipsDir', 'exportDir'] as const) if (s.storage[k] && !isAbsolute(s.storage[k])) s.storage[k] = ''
   return s
 }
 
@@ -179,7 +206,8 @@ function getDisk(): DiskInfo {
     recordingsGb: Math.round((usageBytes(db) / GB) * 100) / 100,
     limitGb: settings.storage.maxRecordingsGb,
     recordingsDir: rec,
-    clipsDir: clipsRoot(settings, dataDir)
+    clipsDir: clipsRoot(settings, dataDir),
+    exportDir: exportRoot(settings, dataDir)
   }
 }
 
@@ -241,8 +269,61 @@ function modelDirs(): string[] {
 }
 
 let geminiAvailable: string[] = []
+
+/** Reservas prontas, na ordem da fila: Groq, OpenRouter, Mistral e, por último, a IA local (se ligada). */
+function aiBackups(): Backup[] {
+  const out: Backup[] = []
+  for (const b of BACKUPS) {
+    const model = settings.ai.backupModels?.[b.id]
+    if (!model) continue
+    if (b.id === 'ollama') {
+      if (settings.ai.fallbackToLocal) out.push({ id: b.id, name: b.name, base: b.base, key: null, model })
+      continue
+    }
+    const key = getSecret(db, b.id)
+    if (key) out.push({ id: b.id, name: b.name, base: b.base, key, model })
+  }
+  return out
+}
+
+/** Reservas com chave guardada mas sem modelo escolhido: escolhe agora (ao abrir o app). Falha de rede fica para a próxima. */
+async function fillBackupModels(): Promise<void> {
+  for (const b of BACKUPS) {
+    if (!b.needsKey || settings.ai.backupModels?.[b.id]) continue
+    const key = getSecret(db, b.id)
+    if (!key) continue
+    try {
+      const model = pickBackupModel(b.id, await listBackupModels(b.id, key))
+      if (!model) continue
+      saveSettings(mergeSettings(settings, { ai: { backupModels: { [b.id]: model } } }))
+      logger.info('ia', `Reserva da KaTY pronta: ${b.name} (${model}).`)
+    } catch (e) {
+      logger.warn('ia', `Reserva ${b.name}: ${(e as Error).message}`)
+    }
+  }
+}
+
+function backupStatus(): AiBackupStatus[] {
+  const ready = new Set(aiBackups().map((b) => b.id))
+  return BACKUPS.map((b) => ({
+    id: b.id,
+    name: b.name,
+    needsKey: b.needsKey,
+    keyUrl: b.keyUrl,
+    note: b.note,
+    ready: ready.has(b.id),
+    hasKey: b.needsKey ? !!getSecret(db, b.id) : false,
+    model: settings.ai.backupModels?.[b.id] || null
+  }))
+}
+
+const geminiTarget = () => {
+  const key = getSecret(db, 'gemini')
+  return key && settings.ai.geminiModel ? { key, model: settings.ai.geminiModel } : null
+}
+
 function aiStatus(): AiStatus {
-  return { hasKey: !!getSecret(db, 'gemini'), model: settings.ai.geminiModel || null, available: geminiAvailable }
+  return { hasKey: !!getSecret(db, 'gemini'), keyUnreadable: secretUnreadable(db, 'gemini'), model: settings.ai.geminiModel || null, available: geminiAvailable }
 }
 
 function checkDisk(): void {
@@ -289,38 +370,138 @@ async function enforceStorage(): Promise<void> {
   }
 }
 
-function registerIpc(): void {
-  ipcMain.handle('app:info', (): AppInfo => ({ version: app.getVersion(), dataDir, dbPath, dev: !app.isPackaged }))
-  ipcMain.handle('settings:get', () => settings)
-  ipcMain.handle('settings:update', (_e, patch: DeepPartial<Settings>) => {
-    const before = settings.performance.mode
-    const prevStorage = settings.storage
-    const prevBackground = settings.background
-    const merged = mergeSettings(settings, patch)
-    // Pastas só aceitam caminho absoluto (ou vazio = padrão); qualquer outra coisa mantém a anterior
-    for (const k of ['recordingsDir', 'clipsDir'] as const) {
-      const v = merged.storage[k]
-      if (v && !isAbsolute(v)) {
-        logger.warn('ajustes', `Pasta inválida ignorada: "${v}". Escolha uma pasta pelo botão.`)
-        merged.storage[k] = prevStorage[k]
-      }
+/**
+ * "Apagar pedaços que não viraram clipe": nas lives já terminadas (há mais de 30 min, analisadas e sem nada
+ * na fila), guarda só os trechos dos clipes e momentos e apaga o resto. Descartados não seguram nada.
+ */
+function cleanUnused(): void {
+  if (!settings.storage.deleteUnusedSegments) return
+  try {
+    const r = deleteUnused(db, new Set([...live.activeLiveIds(), ...vod.importingIds()]))
+    if (r.deletedSegments)
+      logger.info(
+        'disco',
+        `Limpeza: apagados ${r.deletedSegments} pedaço(s) sem clipe nem momento de ${r.lives} live(s), ${(r.freedBytes / GB).toFixed(2)} GB liberados.`
+      )
+  } catch (e) {
+    logger.error('disco', `Falha na limpeza das gravações: ${(e as Error).message}`)
+  }
+}
+
+/**
+ * Apaga sozinho os clipes em Descartados, pela opção da aba: ao abrir o app (todos) ou depois do prazo escolhido.
+ */
+function purgeDiscarded(atStartup = false): void {
+  const mode = settings.clips.discardedDelete
+  const after = DISCARDED_AFTER_MS[mode]
+  if (mode === 'never' || (mode === 'startup' && !atStartup)) return
+  try {
+    const n = clips.purgeRejected(after ?? 0)
+    if (n) logger.info('clipes', `${n} clipe(s) descartado(s) apagado(s) do disco${mode === 'startup' ? ' ao abrir o app' : ''}.`)
+  } catch (e) {
+    logger.error('clipes', `Falha ao apagar os descartados: ${(e as Error).message}`)
+  }
+}
+
+/** Aplica uma mudança nos ajustes (pelas telas ou pelo assistente) e reage ao que mudou. */
+function applySettings(patch: DeepPartial<Settings>): Settings {
+  const before = settings.performance.mode
+  const prevStorage = settings.storage
+  const prevBackground = settings.background
+  const prevDiscarded = settings.clips.discardedDelete
+  const merged = mergeSettings(settings, patch)
+  // Pastas só aceitam caminho absoluto (ou vazio = padrão); qualquer outra coisa mantém a anterior
+  for (const k of ['recordingsDir', 'clipsDir', 'exportDir'] as const) {
+    const v = merged.storage[k]
+    if (v && !isAbsolute(v)) {
+      logger.warn('ajustes', `Pasta inválida ignorada: "${v}". Escolha uma pasta pelo botão.`)
+      merged.storage[k] = prevStorage[k]
     }
-    const next = saveSettings(merged)
-    if (next.performance.mode !== before) logger.info('ajustes', `Modo de desempenho: ${next.performance.mode === 'max' ? 'máximo' : 'econômico'}.`)
-    if (next.storage.recordingsDir !== prevStorage.recordingsDir)
-      logger.info('disco', `Novas gravações vão para ${recordingsRoot(next, dataDir)}. As antigas continuam onde estavam.`)
-    if (next.storage.maxRecordingsGb !== prevStorage.maxRecordingsGb || next.storage.whenFull !== prevStorage.whenFull) void enforceStorage()
-    if (next.background.openAtLogin !== prevBackground.openAtLogin) {
-      applyLoginItem()
-      logger.info('ajustes', next.background.openAtLogin ? 'O Clipador vai abrir junto com o Windows, na bandeja.' : 'O Clipador não abre mais junto com o Windows.')
-    }
-    if (next.background.keepAwake !== prevBackground.keepAwake) updateKeepAwake()
-    return next
+  }
+  const next = saveSettings(merged)
+  if (next.performance.mode !== before) logger.info('ajustes', `Modo de desempenho: ${next.performance.mode === 'max' ? 'máximo' : 'econômico'}.`)
+  if (next.storage.recordingsDir !== prevStorage.recordingsDir)
+    logger.info('disco', `Novas gravações vão para ${recordingsRoot(next, dataDir)}. As antigas continuam onde estavam.`)
+  if (next.storage.maxRecordingsGb !== prevStorage.maxRecordingsGb || next.storage.whenFull !== prevStorage.whenFull) void enforceStorage()
+  if (next.storage.deleteUnusedSegments && !prevStorage.deleteUnusedSegments) cleanUnused()
+  if (next.clips.discardedDelete !== prevDiscarded) purgeDiscarded()
+  if (next.background.openAtLogin !== prevBackground.openAtLogin) {
+    applyLoginItem()
+    logger.info('ajustes', next.background.openAtLogin ? 'O Clipador vai abrir junto com o Windows, na bandeja.' : 'O Clipador não abre mais junto com o Windows.')
+  }
+  if (next.background.keepAwake !== prevBackground.keepAwake) updateKeepAwake()
+  return next
+}
+
+/** Banco sem nada ainda (app recém-instalado) */
+function isFresh(): boolean {
+  const n = (q: string) => (db.prepare(q).get() as { n: number }).n
+  return n('SELECT COUNT(*) AS n FROM channels') + n('SELECT COUNT(*) AS n FROM lives') + n('SELECT COUNT(*) AS n FROM clips') === 0
+}
+
+/** Banco trazido de outra pasta, trocado pelo atual depois que o app fecha (e então reabre) */
+let pendingImport: string | null = null
+
+/**
+ * Traz os dados de outra pasta "dados" (por exemplo, do modo de desenvolvimento ou de outro PC):
+ * fotografia consistente do banco (VACUUM INTO) e fotos de perfil. O banco atual é trocado ao reiniciar.
+ * As gravações e os clipes ficam onde estão (o banco guarda os caminhos).
+ */
+async function importData(): Promise<string | null> {
+  const teste = process.env.CLIPADOR_TESTE_IMPORTAR
+  const pick = teste
+    ? { canceled: false, filePaths: [teste] }
+    : await dialog.showOpenDialog(win!, {
+    title: 'Escolha a pasta "dados" do Clipador que você usava',
+    defaultPath: join(app.getPath('desktop'), 'Clipador KTY', 'dados'),
+    properties: ['openDirectory']
   })
+  if (pick.canceled || !pick.filePaths[0]) return null
+  const dir = pick.filePaths[0]
+  const src = join(dir, 'clipador.db')
+  if (!existsSync(src)) throw new Error('Essa pasta não tem o arquivo clipador.db. Escolha a pasta "dados" do Clipador.')
+  if (resolve(dir) === resolve(dataDir)) throw new Error('Essa já é a pasta de dados deste app.')
+  const answer = teste
+    ? { response: 0 }
+    : await dialog.showMessageBox(win!, {
+    type: 'warning',
+    buttons: ['Trazer os dados', 'Cancelar'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Trazer dados',
+    message: 'Trocar os dados deste app pelos da pasta escolhida?',
+    detail: 'Canais, lives, momentos, clipes, ajustes e perfis daqui são substituídos pelos de lá. As gravações e os clipes no disco não mudam. O app reinicia sozinho.'
+  })
+  if (answer.response !== 0) return null
+  const tmp = join(dataDir, 'importando.db')
+  rmSync(tmp, { force: true })
+  const from = new DatabaseSync(src, { readOnly: true })
+  try {
+    from.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`)
+  } finally {
+    from.close()
+  }
+  if (existsSync(join(dir, 'perfis'))) cpSync(join(dir, 'perfis'), join(dataDir, 'perfis'), { recursive: true, force: true })
+  logger.info('app', `Dados trazidos de ${dir}. Reiniciando para usar.`)
+  pendingImport = tmp
+  setImmediate(() => app.quit())
+  return dir
+}
+
+function registerIpc(): void {
+  ipcMain.handle('app:info', (): AppInfo => ({ version: app.getVersion(), dataDir, dbPath, dev: !app.isPackaged, fresh: isFresh() }))
+  ipcMain.handle('data:import', () => importData())
+  ipcMain.handle('settings:get', () => settings)
+  ipcMain.handle('settings:update', (_e, patch: DeepPartial<Settings>) => applySettings(patch))
   ipcMain.handle('settings:reset', () => {
     logger.info('ajustes', 'Ajustes restaurados para o padrão (pastas e programas deste PC mantidos).')
     return saveSettings(withMachine(defaultSettings(), settings))
   })
+  ipcMain.handle('assistant:state', () => assistant.state())
+  ipcMain.handle('assistant:send', (_e, text: string) => assistant.send(String(text ?? '').slice(0, 4000)))
+  ipcMain.handle('assistant:confirm', (_e, id: string, ok: boolean) => assistant.confirm(String(id), !!ok))
+  ipcMain.handle('assistant:stop', () => assistant.stop())
+  ipcMain.handle('assistant:clear', () => assistant.clear())
   ipcMain.handle('tools:get', (_e, refresh?: boolean) => getTools(settings, !!refresh))
   ipcMain.handle('hardware:get', () => hardware)
   ipcMain.handle('hardware:testEncoders', () => queue.enqueue('diagnostico:codificadores', 'Testar codificadores de vídeo', null, { maxAttempts: 1 }).id)
@@ -338,7 +519,11 @@ function registerIpc(): void {
   ipcMain.handle('channels:list', () => live.list())
   ipcMain.handle('channels:add', (_e, platform: Platform, input: string) => live.add(platform, input))
   ipcMain.handle('channels:remove', (_e, id: number) => live.remove(id))
+  ipcMain.handle('channels:lookup', (_e, name: string) => live.lookup(String(name ?? '').slice(0, 200)))
+  ipcMain.handle('channels:search', (_e, text: string) => smartChannelSearch(channelSearchDeps(), String(text ?? '').slice(0, 200)))
   ipcMain.handle('channels:setEnabled', (_e, id: number, enabled: boolean) => live.setEnabled(id, enabled))
+  ipcMain.handle('channels:setRecord', (_e, id: number, record: boolean) => live.setRecord(Number(id), !!record))
+  ipcMain.handle('channels:setModality', (_e, id: number, modality: string | null) => live.setModality(id, modality as Modality | null))
   ipcMain.handle('channels:checkNow', () => live.checkNow())
   ipcMain.handle('channels:stopRecording', (_e, id: number) => live.stopRecording(id, 'ended'))
   ipcMain.handle('lives:list', (_e, limit?: number) => vod.list(limit))
@@ -347,6 +532,9 @@ function registerIpc(): void {
   ipcMain.handle('vod:retry', (_e, id: number) => vod.retry(id))
   ipcMain.handle('lives:delete', (_e, id: number) => vod.delete(id))
   ipcMain.handle('moments:list', (_e, liveId?: number) => moments.list(liveId))
+  ipcMain.handle('search:text', (_e, q: string) => search.search(String(q ?? '').slice(0, 200)))
+  ipcMain.handle('search:ai', (_e, q: string) => search.searchAi(String(q ?? '').slice(0, 300)))
+  ipcMain.handle('moments:at', (_e, liveId: number, tMs: number, label: string) => moments.createAt(Number(liveId), Number(tMs), String(label ?? '')))
   ipcMain.handle('moments:timeline', (_e, liveId: number) => moments.timeline(liveId))
   ipcMain.handle('moments:detect', (_e, liveId: number) => moments.enqueue(liveId, 'pedido manual'))
   ipcMain.handle('moments:open', async (_e, id: number) => {
@@ -354,6 +542,58 @@ function registerIpc(): void {
     if (p) await shell.openPath(p)
   })
   ipcMain.handle('ai:status', () => aiStatus())
+  ipcMain.handle('ai:backups', () => backupStatus())
+  // Chave de uma reserva: testa listando os modelos, escolhe o melhor e guarda (vazio = apagar)
+  ipcMain.handle('ai:setBackupKey', async (_e, id: BackupId, key: string) => {
+    const b = BACKUPS.find((x) => x.id === id && x.needsKey)
+    if (!b) throw new Error('Reserva desconhecida.')
+    // Cópia com espaço, quebra de linha ou aspas em volta: limpa antes de testar
+    const k = String(key ?? '').replace(/\s+/g, '').replace(/^["'`]+|["'`]+$/g, '')
+    if (!k) {
+      setSecret(db, b.id, null)
+      saveSettings(mergeSettings(settings, { ai: { backupModels: { [b.id]: '' } } }))
+      logger.info('ia', `Chave do ${b.name} apagada.`)
+      return backupStatus()
+    }
+    const model = pickBackupModel(b.id, await listBackupModels(b.id, k))
+    if (!model) throw new Error(`A chave do ${b.name} funciona, mas não há modelo de texto grátis disponível para ela.`)
+    setSecret(db, b.id, k)
+    saveSettings(mergeSettings(settings, { ai: { backupModels: { [b.id]: model } } }))
+    logger.info('ia', `Reserva da KaTY pronta: ${b.name} (${model}).`)
+    // Lances das últimas 24 h sem análise (a IA estava fora): analisa agora com a reserva
+    const pending = db
+      .prepare(`SELECT DISTINCT live_id FROM moments WHERE ai IS NULL AND status IN ('new', 'kept') AND created_at > ?`)
+      .all(Date.now() - 24 * 3600_000) as { live_id: number }[]
+    for (const p of pending) moments.enqueue(p.live_id, `reserva ${b.name} pronta`)
+    return backupStatus()
+  })
+  // IA local: procura o Ollama aberto neste PC e escolhe o modelo
+  // Testar uma reserva sozinha: um pedido pequeno no mesmo formato da análise dos lances
+  ipcMain.handle('ai:testBackup', async (_e, id: BackupId) => {
+    const b = aiBackups().find((x) => x.id === id)
+    if (!b) throw new Error('Essa reserva ainda não está pronta.')
+    const t0 = Date.now()
+    const r = await backupJson<{ title_pt: string }>(
+      b,
+      'Você dá títulos curtos de clipes de live, em CAIXA ALTA, com 1 emoji no fim, em português do Brasil.',
+      'O streamer tentou um salto de moto, caiu do prédio e o chat explodiu de rir. Dê o título.',
+      { type: 'OBJECT', properties: { title_pt: { type: 'STRING' } }, required: ['title_pt'] }
+    )
+    return { ms: Date.now() - t0, model: b.model, answer: String(r.title_pt ?? '').slice(0, 120) }
+  })
+  ipcMain.handle('ai:checkLocal', async () => {
+    try {
+      const model = pickBackupModel('ollama', await listBackupModels('ollama', null))
+      if (!model) throw new Error('O Ollama está aberto, mas sem nenhum modelo baixado (ex.: rode "ollama pull qwen3" no terminal).')
+      saveSettings(mergeSettings(settings, { ai: { backupModels: { ollama: model } } }))
+      logger.info('ia', `IA local encontrada: Ollama (${model}).`)
+    } catch (e) {
+      saveSettings(mergeSettings(settings, { ai: { backupModels: { ollama: '' } } }))
+      const m = (e as Error).message
+      throw new Error(/fetch|ECONNREFUSED|Failed/i.test(m) ? 'Ollama não encontrado neste PC (instale e abra o Ollama).' : m)
+    }
+    return backupStatus()
+  })
   ipcMain.handle('ai:setGeminiKey', async (_e, key: string) => {
     const k = key.trim()
     if (!k) {
@@ -371,6 +611,11 @@ function registerIpc(): void {
     geminiAvailable = models
     saveSettings(mergeSettings(settings, { ai: { geminiModel: model } }))
     logger.info('ia', `Chave do Gemini salva. Modelo: ${model}.`)
+    // Lances das últimas 24 h que ficaram sem análise (a chave estava fora do ar): analisa agora e põe os títulos que faltaram
+    const pending = db
+      .prepare(`SELECT DISTINCT live_id FROM moments WHERE ai IS NULL AND status IN ('new', 'kept') AND created_at > ?`)
+      .all(Date.now() - 24 * 3600_000) as { live_id: number }[]
+    for (const p of pending) moments.enqueue(p.live_id, 'chave do Gemini salva')
     return aiStatus()
   })
   ipcMain.handle('shell:openExternal', (_e, url: string) => {
@@ -381,9 +626,29 @@ function registerIpc(): void {
   ipcMain.handle('clips:preview', (_e, momentId: number, o: ClipOptions) => clips.preview(momentId, o))
   ipcMain.handle('clips:frame', (_e, momentId: number) => clips.frame(momentId))
   ipcMain.handle('clips:setFacecam', (_e, channelId: number, rect: Rect | null) => clips.setFacecam(channelId, rect))
+  ipcMain.handle('clips:detectFacecam', (_e, momentId: number) => clips.detectFacecam(momentId, true))
   ipcMain.handle('clips:render', (_e, momentId: number, o: ClipOptions) => clips.request(momentId, o))
   ipcMain.handle('clips:list', (_e, liveId?: number) => clips.list(liveId))
   ipcMain.handle('clips:delete', (_e, id: number) => clips.delete(id))
+  ipcMain.handle('clips:purgeRejected', () => {
+    const n = clips.purgeRejected(0)
+    if (n) logger.info('clipes', `${n} clipe(s) descartado(s) apagado(s) do disco.`)
+    return n
+  })
+  ipcMain.handle('clips:export', (_e, id: number) => clips.exportClip(id))
+  ipcMain.handle('clips:exportApproved', () => clips.exportApproved())
+  ipcMain.handle('clips:posted', (_e, id: number, platform: 'youtube' | 'tiktok', posted: boolean) => clips.markPosted(id, platform, !!posted))
+  ipcMain.handle('clips:postText', (_e, id: number, field: 'youtubeTitle' | 'youtubeDescription' | 'tiktokCaption', text: string | null) =>
+    clips.setPostText(id, field, text)
+  )
+  // Arrastar o vídeo do app para a página de envio do navegador: precisa ser síncrono, no mesmo evento de arrastar
+  ipcMain.on('clips:drag', (e, id: number) => {
+    const file = clips.uploadFile(Number(id))
+    if (!file) return
+    const cover = clips.coverIfExists(Number(id))
+    const icon = nativeImage.createFromPath(cover ?? join(app.getAppPath(), 'resources', 'icon.png')).resize({ width: 64 })
+    e.sender.startDrag({ file, icon })
+  })
   ipcMain.handle('clips:review', (_e, id: number, review: ClipReview) => clips.setReview(id, review))
   ipcMain.handle('moments:dismiss', (_e, id: number) => moments.dismiss(id))
   ipcMain.handle('shell:showInFolder', (_e, p: string) => shell.showItemInFolder(p))
@@ -547,12 +812,17 @@ app.whenReady().then(() => {
       const model = models.find((m) => m.name === settings.speech.model) ?? models[0]
       return ffmpeg && whisper && model ? { ffmpeg, whisper, model: model.path } : null
     },
-    gemini: () => {
-      const key = getSecret(db, 'gemini')
-      return key && settings.ai.geminiModel ? { key, model: settings.ai.geminiModel } : null
-    }
+    gemini: geminiTarget,
+    backups: aiBackups
   })
   moments.on('moments', (liveId: number) => send('moments', liveId))
+  search = new SearchService({
+    db,
+    log: logger,
+    moments,
+    gemini: geminiTarget,
+    backups: aiBackups
+  })
   clips = new ClipService({
     db,
     log: logger,
@@ -565,14 +835,79 @@ app.whenReady().then(() => {
     },
     encoders: () => hardware.encoders,
     clipsRoot: () => clipsRoot(settings, dataDir),
+    exportRoot: () => exportRoot(settings, dataDir),
     cacheDir: join(dataDir, 'cache'),
-    aiReady: () => settings.ai.provider === 'gemini' && !!settings.ai.geminiModel && !!getSecret(db, 'gemini')
+    aiReady: () => (settings.ai.provider === 'gemini' && !!geminiTarget()) || aiBackups().length > 0,
+    // Achar a facecam olhando quadros da live: só o Gemini enxerga imagem (as reservas são só texto)
+    vision: () => geminiTarget()
   })
   clips.on('clips', () => send('clips', null))
+  // Assistente: conversa com o Gemini, que usa as mesmas ações das telas
+  assistant = new AssistantService({
+    db,
+    log: logger,
+    gemini: () => {
+      const key = getSecret(db, 'gemini')
+      return key && settings.ai.geminiModel ? { key, model: settings.ai.geminiModel } : null
+    },
+    tools: buildAssistantTools({
+      live,
+      vod,
+      moments,
+      clips,
+      queue,
+      log: logger,
+      settings: () => settings,
+      updateSettings: (patch) => {
+        const next = applySettings(patch)
+        send('settings', next)
+        return next
+      },
+      disk: () => getDisk(),
+      programs: () => getTools(settings),
+      aiReady: () => !!getSecret(db, 'gemini') && !!settings.ai.geminiModel,
+      navigate: (to) => send('assistant:navigate', to),
+      openPath: (p) => void shell.openPath(p),
+      search,
+      channelSearch: (text) => smartChannelSearch(channelSearchDeps(), text)
+    }),
+    system: () => assistantSystem({ profile: profiles.list().profiles.find((p) => p.id === profiles.activeId())?.name ?? '', now: new Date() })
+  })
+  assistant.on('state', (st) => send('assistant', st))
+  // "Clipar agora" numa live: o trecho são os últimos ~30 s; espera o pedaço gravado que os contém fechar
+  const clipNowTick = () => {
+    for (const p of [...clipNowPending]) {
+      const end = (db.prepare(`SELECT MAX(start_utc + COALESCE(duration_s, 0) * 1000) AS e FROM segments WHERE live_id = ? AND status != 'deleted'`).get(p.liveId) as { e: number | null }).e ?? 0
+      const late = Date.now() - p.tMs > 6 * 60_000
+      if (end < p.tMs + 12_000 && !late) continue
+      clipNowPending.splice(clipNowPending.indexOf(p), 1)
+      try {
+        const id = moments.createAt(p.liveId, p.tMs, 'Pedido ao vivo (Clipar agora)')
+        if (db.prepare('SELECT 1 FROM clips WHERE moment_id = ?').get(id)) {
+          logger.info('clipes', 'Clipar agora: este lance já tinha virado clipe.')
+          continue
+        }
+        clips.request(id, clips.draft(id).options)
+      } catch (e) {
+        logger.warn('clipes', `Clipar agora não deu certo: ${(e as Error).message}`)
+      }
+    }
+  }
+  ipcMain.handle('live:clipNow', (_e, liveId: number) => {
+    const tMs = Date.now() - 18_000
+    clipNowPending.push({ liveId: Number(liveId), tMs })
+    clipNowTick()
+    return tMs
+  })
   // Aviso: clipe pedido à mão avisa sozinho; os automáticos de uma live avisam juntos quando o último termina
   const autoReady = new Map<number, number>()
   clips.on('ready', (c: ClipRecord | null) => {
     if (!c) return
+    // Clipe ao vivo: quanto tempo depois do lance ele ficou pronto
+    if (c.auto && c.liveId != null && c.momentId != null && live.activeLiveIds().has(c.liveId)) {
+      const m = db.prepare('SELECT peak_utc FROM moments WHERE id = ?').get(c.momentId) as { peak_utc: number } | undefined
+      if (m) logger.info('clipes', `Clipe ao vivo pronto ${Math.max(1, Math.round((Date.now() - m.peak_utc) / 60_000))} min depois do lance: ${c.channelName} · ${c.title.slice(0, 60)}`)
+    }
     if (!c.auto) return notify(`Clipe pronto: ${c.channelName}`, c.title.slice(0, 180))
     const k = c.liveId ?? 0
     autoReady.set(k, (autoReady.get(k) ?? 0) + 1)
@@ -583,8 +918,12 @@ app.whenReady().then(() => {
   })
   moments.on('detected', (liveId: number) => {
     notifyMoments(liveId)
+    clips.retitleMissing(liveId)
     clips.autoForLive(liveId, live.activeLiveIds().has(liveId))
   })
+  live.on('wentLive', (r: { name: string; title: string; game: string | null }) =>
+    notify(`Ao vivo: ${r.name}`, `${r.title || 'Entrou ao vivo.'}${r.game ? ` (${r.game})` : ''} · só vigiando, não está gravando.`.slice(0, 180))
+  )
   live.on('recordingStarted', (r: { name: string; title: string; resumed: boolean }) =>
     notify(r.resumed ? `Gravação retomada: ${r.name}` : `Gravando: ${r.name}`, (r.title || 'A live começou.').slice(0, 180))
   )
@@ -601,7 +940,10 @@ app.whenReady().then(() => {
   })
   // Quando procurar momentos: VOD pronto, a cada ~5 min de gravação e no fim da live
   vod.on('ready', (liveId: number) => moments.enqueue(liveId, 'VOD importado'))
-  live.on('segment', (s: { liveId: number }) => moments.enqueueThrottled(s.liveId))
+  live.on('segment', (s: { liveId: number }) => {
+    moments.enqueueThrottled(s.liveId, detectEveryMinutes(settings))
+    clipNowTick()
+  })
   live.on('recordingEnded', (liveId: number) => moments.enqueue(liveId, 'live encerrada'))
   protocol.handle('clipador', async (req) => {
     const url = new URL(req.url)
@@ -624,6 +966,7 @@ app.whenReady().then(() => {
   registerJobs()
   registerIpc()
   createWindow()
+  void fillBackupModels()
   setupTray()
   applyLoginItem()
   if (startHidden) logger.info('app', 'Aberto junto com o Windows, na bandeja.')
@@ -638,6 +981,10 @@ app.whenReady().then(() => {
   void enforceStorage()
   checkDisk()
   setInterval(checkDisk, 10 * 60 * 1000)
+  cleanUnused()
+  setInterval(cleanUnused, 10 * 60 * 1000)
+  purgeDiscarded(true)
+  setInterval(() => purgeDiscarded(), 10 * 60 * 1000)
 })
 
 let quitting = false
@@ -648,6 +995,12 @@ app.on('before-quit', (e) => {
   // Fecha as gravações com o último pedaço íntegro antes de sair
   void Promise.allSettled([live?.stop(), queue.stop()]).finally(() => {
     db.close()
+    // Dados trazidos de outra pasta: troca o banco com o app fechado e reabre
+    if (pendingImport && existsSync(pendingImport)) {
+      for (const ext of ['', '-wal', '-shm']) rmSync(dbPath + ext, { force: true })
+      renameSync(pendingImport, dbPath)
+      app.relaunch()
+    }
     app.quit()
   })
 })

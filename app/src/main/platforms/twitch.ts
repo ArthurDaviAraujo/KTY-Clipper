@@ -264,3 +264,22 @@ export class TwitchChat extends EventEmitter {
     })
   }
 }
+
+/** Busca de canais do site da Twitch (os mais parecidos com o que foi digitado). */
+export async function twitchSearch(text: string, signal?: AbortSignal): Promise<import('../../shared/types').ChannelHit[]> {
+  const query = `query { searchFor(userQuery: ${JSON.stringify(text)}, platform: "web", options: { targets: [{ index: CHANNEL }] }) { channels { items { login displayName description profileImageURL(width: 70) followers { totalCount } stream { id } } } } }`
+  const r = await httpFetch(GQL_URL, { method: 'POST', headers: { 'Client-ID': WEB_CLIENT_ID, 'Content-Type': 'application/json' }, body: JSON.stringify({ query }), signal })
+  if (!r.ok) throw new Error(`Twitch respondeu ${r.status}`)
+  const j = (await r.json()) as {
+    data?: { searchFor?: { channels?: { items?: { login: string; displayName: string; description: string | null; profileImageURL: string | null; followers: { totalCount: number } | null; stream: { id: string } | null }[] } } }
+  }
+  return (j.data?.searchFor?.channels?.items ?? []).slice(0, 8).map((c) => ({
+    platform: 'twitch' as const,
+    login: c.login.toLowerCase(),
+    displayName: c.displayName,
+    avatarUrl: c.profileImageURL,
+    followers: c.followers?.totalCount ?? null,
+    live: !!c.stream,
+    description: (c.description ?? '').slice(0, 200)
+  }))
+}

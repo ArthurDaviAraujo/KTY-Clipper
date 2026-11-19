@@ -14,6 +14,8 @@
   --color-brand: #ff3d8b;
   --color-violet: #8b5cf6;
   --color-gold: #f5a524;
+  /* Amarelo da IA (ícone do assistente) */
+  --color-ai: #facc15;
   --color-live: #ff453a;
   --color-ok: #34d399;
   --color-warn: #fbbf24;
@@ -94,6 +96,50 @@ select option {
 }
 .live-ring {
   animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+/* Bolinha "ao vivo": pisca de leve e solta uma onda vermelha */
+.live-dot {
+  position: relative;
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: rgb(255 69 58);
+  animation: live-blink 1.6s ease-in-out infinite;
+}
+.live-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgb(255 69 58);
+  animation: live-wave 1.6s ease-out infinite;
+}
+@keyframes live-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes live-wave {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dot,
+  .live-dot::after {
+    animation: none;
+  }
 }
 
 @keyframes float {

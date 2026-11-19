@@ -209,6 +209,57 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (live_id, from_utc)
   );
   INSERT INTO live_games(live_id, from_utc, game) SELECT id, started_at, game FROM lives WHERE started_at IS NOT NULL;
+  `,
+  // 12 — modalidade fixada por canal (null = automática pela categoria da live)
+  `
+  ALTER TABLE channels ADD COLUMN modality TEXT;
+  `,
+  // 13 — posição do recorte lembrada por canal (onde fica o rosto do streamer no layout de recorte)
+  `
+  ALTER TABLE channels ADD COLUMN crop_x REAL;
+  `,
+  // 14 — postar à mão: cópia na pasta "para postar" e quando foi postado em cada rede
+  `
+  ALTER TABLE clips ADD COLUMN exported_path TEXT;
+  ALTER TABLE clips ADD COLUMN posted TEXT;
+  `,
+  // 15 — textos de postagem editados à mão (título, descrição, legenda) por cima dos gerados
+  `
+  ALTER TABLE clips ADD COLUMN post_custom TEXT;
+  `,
+  // 16 — "vigiar" (saber quando entra ao vivo) separado de "gravar"; os canais que já existiam continuam gravando
+  `
+  ALTER TABLE channels ADD COLUMN record INTEGER NOT NULL DEFAULT 1;
+  `,
+  // 17 — YouTube como fonte: a tabela de canais é refeita sem a trava "só twitch e kick"
+  // (SEM_FK: roda com as chaves estrangeiras desligadas, senão apagar a tabela velha apagaria as lives em cascata)
+  `-- SEM_FK
+  CREATE TABLE channels_new (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform        TEXT    NOT NULL CHECK (platform IN ('twitch', 'kick', 'youtube')),
+    login           TEXT    NOT NULL,
+    display_name    TEXT,
+    avatar_url      TEXT,
+    language        TEXT,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    created_at      INTEGER NOT NULL,
+    last_checked_at INTEGER,
+    last_error      TEXT,
+    origin          TEXT    NOT NULL DEFAULT 'watch',
+    facecam         TEXT,
+    modality        TEXT,
+    crop_x          REAL,
+    record          INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (platform, login)
+  );
+  INSERT INTO channels_new(id, platform, login, display_name, avatar_url, language, enabled, created_at, last_checked_at, last_error, origin, facecam, modality, crop_x, record)
+    SELECT id, platform, login, display_name, avatar_url, language, enabled, created_at, last_checked_at, last_error, origin, facecam, modality, crop_x, record FROM channels;
+  DROP TABLE channels;
+  ALTER TABLE channels_new RENAME TO channels;
+  `,
+  // 18 — quando o clipe foi aprovado ou descartado (para apagar os descartados depois de um prazo)
+  `
+  ALTER TABLE clips ADD COLUMN reviewed_at INTEGER;
   `
 ]
 
@@ -225,14 +276,23 @@ export function openDb(path: string): Db {
 export function migrate(db: Db): number {
   const current = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
   for (let v = current; v < MIGRATIONS.length; v++) {
+    // Refazer uma tabela pede as chaves estrangeiras desligadas (só pode mudar fora da transação)
+    const noFk = MIGRATIONS[v].trimStart().startsWith('-- SEM_FK')
+    if (noFk) db.exec('PRAGMA foreign_keys = OFF')
     db.exec('BEGIN')
     try {
       db.exec(MIGRATIONS[v])
+      if (noFk) {
+        const broken = db.prepare('PRAGMA foreign_key_check').all()
+        if (broken.length) throw new Error(`${broken.length} ligação(ões) quebrada(s) entre tabelas`)
+      }
       db.exec(`PRAGMA user_version = ${v + 1}`)
       db.exec('COMMIT')
     } catch (e) {
       db.exec('ROLLBACK')
       throw new Error(`Falha na migração ${v + 1} do banco: ${(e as Error).message}`)
+    } finally {
+      if (noFk) db.exec('PRAGMA foreign_keys = ON')
     }
   }
   return MIGRATIONS.length

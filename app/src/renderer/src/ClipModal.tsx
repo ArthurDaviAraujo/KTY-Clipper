@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
-import { Captions, Check, Clapperboard, Copy, FolderOpen, Loader2, Pencil, ScanFace, Trash2, Type, X } from 'lucide-react'
+import { Captions, Check, Clapperboard, FolderOpen, Loader2, Pencil, ScanFace, Sparkles, Trash2, Type, X } from 'lucide-react'
 import { LAYOUTS } from '../../shared/clips'
 import { formatTimecode } from '../../shared/vod'
 import type { ClipDraft, ClipLayout, ClipOptions, ClipRecord, MomentRecord, Rect } from '../../shared/types'
 import { Badge, Button, Segmented, Toggle, cx } from './ui'
+import { BrandIcon } from './BrandIcon'
+import { PostField } from './pages/PostCard'
 
 const clean = (e: unknown) => ((e as Error).message ?? String(e)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 
@@ -156,6 +158,8 @@ export function ClipModal({ momentId, onClose, onQueued }: { momentId: number; o
   const [error, setError] = useState('')
   const [picking, setPicking] = useState(false)
   const [sending, setSending] = useState(false)
+  const [finding, setFinding] = useState(false)
+  const [camMsg, setCamMsg] = useState('')
   const reqId = useRef(0)
 
   useEffect(() => {
@@ -278,14 +282,42 @@ export function ClipModal({ momentId, onClose, onQueued }: { momentId: number; o
                   ))}
                 </div>
                 {o.layout === 'split' && (
-                  <div className="flex items-center justify-between gap-2 rounded-xl bg-card/60 px-3 py-2">
-                    <span className="flex items-center gap-2 text-xs">
-                      <ScanFace size={14} className={facecam ? 'text-ok' : 'text-warn'} />
-                      {facecam ? 'Facecam marcada para este canal.' : 'Marque a facecam; sem ela o clipe sai em tela inteira.'}
-                    </span>
-                    <Button variant="ghost" onClick={() => setPicking(true)}>
-                      {facecam ? 'Ajustar' : 'Marcar facecam'}
-                    </Button>
+                  <div className="space-y-1.5 rounded-xl bg-card/60 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2 text-xs">
+                        <ScanFace size={14} className={facecam ? 'text-ok' : 'text-warn'} />
+                        {facecam ? 'Facecam marcada para este canal.' : 'Sem facecam: a KaTY acha sozinha ao gerar, ou marque.'}
+                      </span>
+                      <div className="flex shrink-0 gap-1.5">
+                        {typeof window.api.detectFacecam === 'function' && (
+                          <Button
+                            variant="ghost"
+                            disabled={finding}
+                            onClick={() => {
+                              setFinding(true)
+                              setCamMsg('')
+                              void window.api.detectFacecam(momentId).then(
+                                (r) => {
+                                  setFinding(false)
+                                  if (r.rect) setFacecam(r.rect)
+                                  setCamMsg(r.rect ? 'A KaTY achou a facecam. Confira na prévia.' : r.why)
+                                },
+                                (e) => {
+                                  setFinding(false)
+                                  setCamMsg(clean(e))
+                                }
+                              )
+                            }}
+                          >
+                            {finding ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} className="text-gold" />} Achar com a KaTY
+                          </Button>
+                        )}
+                        <Button variant="ghost" onClick={() => setPicking(true)}>
+                          {facecam ? 'Ajustar' : 'Marcar'}
+                        </Button>
+                      </div>
+                    </div>
+                    {camMsg && <p className="text-[11px] text-muted">{camMsg}</p>}
                   </div>
                 )}
                 {((o.layout === 'split' && facecam) || o.layout === 'crop') && (
@@ -375,7 +407,7 @@ export function ClipModal({ momentId, onClose, onQueued }: { momentId: number; o
 
         <div className="flex items-center justify-between gap-3 border-t border-line/70 px-5 py-3">
           <p className={cx('min-w-0 truncate text-sm', error ? 'text-err' : 'text-muted')} title={error}>
-            {error || (needsCam ? 'Sem facecam marcada: este clipe sai em tela inteira.' : 'O clipe vai para a fila e aparece em Para revisar.')}
+            {error || (needsCam ? 'Sem facecam marcada: a KaTY tenta achar ao gerar; se não achar, sai em tela inteira.' : 'O clipe vai para a fila e aparece em Para revisar.')}
           </p>
           <div className="flex shrink-0 gap-2">
             <Button variant="ghost" onClick={onClose}>
@@ -395,27 +427,23 @@ export function ClipModal({ momentId, onClose, onQueued }: { momentId: number; o
  * Estúdio do clipe: o vídeo grande, a decisão (aprovar ou descartar) e o texto pronto para postar.
  * "Editar" reabre a janela de gerar com as mesmas escolhas.
  */
-export function ClipStudio({ clip, moment, onClose, onEdit }: { clip: ClipRecord; moment: MomentRecord | null; onClose: () => void; onEdit: () => void }) {
-  const [copied, setCopied] = useState(false)
+export function ClipStudio({
+  clip,
+  moment,
+  onClose,
+  onEdit,
+  onReplaced
+}: {
+  clip: ClipRecord
+  moment: MomentRecord | null
+  onClose: () => void
+  onEdit: () => void
+  /** O clipe foi gerado de novo (novo id): a janela passa a mostrar o novo */
+  onReplaced?: (id: number) => void
+}) {
   const vertical = (clip.height ?? 16) >= (clip.width ?? 9)
   const ready = clip.status === 'ready' && !!clip.path
-  const tags = clip.hashtags.map((h) => `#${h.replace(/^#/, '').replace(/\s+/g, '')}`).join(' ')
   const review = (r: ClipRecord['review'], close = false) => void window.api.reviewClip(clip.id, r).then(() => close && onClose())
-  const copy = async () => {
-    const text = [clip.title, tags].filter(Boolean).join('\n\n')
-    try {
-      await navigator.clipboard.writeText(text)
-    } catch {
-      const t = document.createElement('textarea')
-      t.value = text
-      document.body.appendChild(t)
-      t.select()
-      document.execCommand('copy')
-      t.remove()
-    }
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
 
   return (
     <Overlay onClose={onClose}>
@@ -442,41 +470,57 @@ export function ClipStudio({ clip, moment, onClose, onEdit }: { clip: ClipRecord
                 {clip.score != null && <Badge tone="accent">nota {clip.score}</Badge>}
                 {clip.game && <Badge tone="muted">{clip.game}</Badge>}
                 {clip.tag && <Badge tone="muted">{clip.tag}</Badge>}
-                {clip.auto && <Badge tone="muted">automático</Badge>}
               </div>
               <p className="text-lg font-semibold leading-snug">{clip.title}</p>
-              {clip.titleEn && <p className="text-sm text-muted">{clip.titleEn}</p>}
+              <p className="text-xs text-muted">{clip.channelName}</p>
             </div>
             <button type="button" onClick={onClose} className="rounded-lg p-1 text-muted hover:text-text" aria-label="Fechar">
               <X size={18} />
             </button>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 text-sm">
-            {tags && (
-              <div className="space-y-1.5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted">Hashtags</p>
-                <p className="text-accent-2">{tags}</p>
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 text-sm">
+            {clip.momentId != null && <VideoText clip={clip} onReplaced={onReplaced} />}
+            {ready && (
+              <div className="space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted">Textos para postar</p>
+                <div className="space-y-2.5 rounded-xl bg-white/[0.03] p-3">
+                  <p className="flex items-center gap-1.5 text-[12px] font-medium">
+                    <BrandIcon brand="youtube" size={13} /> YouTube Shorts
+                  </p>
+                  <PostField clip={clip} field="youtubeTitle" label="Título" />
+                  <PostField clip={clip} field="youtubeDescription" label="Descrição" rows={4} />
+                </div>
+                <div className="space-y-2.5 rounded-xl bg-white/[0.03] p-3">
+                  <p className="flex items-center gap-1.5 text-[12px] font-medium">
+                    <BrandIcon brand="tiktok" size={13} /> TikTok
+                  </p>
+                  <PostField clip={clip} field="tiktokCaption" label="Legenda" rows={4} />
+                </div>
               </div>
             )}
-            <Button variant="ghost" onClick={() => void copy()}>
-              <Copy size={14} /> {copied ? 'Copiado!' : 'Copiar título e hashtags'}
-            </Button>
-            {moment && moment.reasons.length > 0 && (
-              <div className="space-y-1.5">
+            {moment && (moment.reasons.length > 0 || moment.ai?.reason) && (
+              <div className="space-y-2 border-t border-white/[0.06] pt-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted">Por que virou clipe</p>
-                <ul className="space-y-0.5 text-xs text-text/85">
+                <ul className="space-y-1 text-xs leading-relaxed text-text/85">
                   {moment.reasons.slice(0, 4).map((r) => (
                     <li key={r}>• {r}</li>
                   ))}
-                  {moment.ai?.reason && <li className="text-accent-2">• IA: {moment.ai.reason}</li>}
+                  {moment.ai?.reason && <li className="text-accent-2">• KaTY: {moment.ai.reason}</li>}
+                  {moment.ai?.hook && <li className="text-accent-2">• Gancho: {moment.ai.hook}</li>}
                 </ul>
+                {moment.ai?.parts && (
+                  <p className="text-[11px] text-muted">
+                    Nota da KaTY: gancho {moment.ai.parts.gancho}/30 · desfecho {moment.ai.parts.desfecho}/30 · emoção {moment.ai.parts.emocao}/20 · compartilhável{' '}
+                    {moment.ai.parts.compartilhavel}/20
+                  </p>
+                )}
               </div>
             )}
             {ready && (
-              <p className="text-xs text-muted">
-                {clip.width}×{clip.height} · {Math.round(clip.durationS)} s · {clip.sizeBytes ? `${(clip.sizeBytes / 1024 ** 2).toFixed(1)} MB` : ''} · o arquivo .txt ao lado tem títulos,
-                hashtags e créditos
+              <p className="text-xs leading-relaxed text-muted">
+                {clip.width}×{clip.height} · {Math.round(clip.durationS)} s · {clip.sizeBytes ? `${(clip.sizeBytes / 1024 ** 2).toFixed(1)} MB` : ''} · o .txt ao lado do vídeo tem
+                títulos, hashtags e créditos
               </p>
             )}
           </div>
@@ -534,5 +578,78 @@ export function ClipStudio({ clip, moment, onClose, onEdit }: { clip: ClipRecord
         </div>
       </div>
     </Overlay>
+  )
+}
+
+/**
+ * O texto de fundo branco em cima do vídeo ("título na tela"). Ele fica gravado no vídeo:
+ * mudar gera o clipe de novo com tudo igual (trecho, layout, legenda), só com o texto novo. Vazio = sem texto.
+ */
+function VideoText({ clip, onReplaced }: { clip: ClipRecord; onReplaced?: (id: number) => void }) {
+  const current = clip.options?.title ?? ''
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState(current)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const rendering = clip.status === 'queued' || clip.status === 'rendering'
+  useEffect(() => setText(current), [current])
+  const apply = async () => {
+    if (clip.momentId == null) return
+    setBusy(true)
+    setErr('')
+    try {
+      const next = await window.api.renderClip(clip.momentId, { ...clip.options, title: text.trim().slice(0, 200) })
+      setEditing(false)
+      onReplaced?.(next.id)
+    } catch (e) {
+      setErr(String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">Texto no vídeo</p>
+        {!editing && (
+          <button type="button" disabled={rendering} onClick={() => setEditing(true)} className="inline-flex items-center gap-1 text-[12px] text-accent-2 hover:underline disabled:opacity-40">
+            <Pencil size={12} /> Mudar
+          </button>
+        )}
+      </div>
+      {editing ? (
+        <div className="space-y-2">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={2}
+            autoFocus
+            maxLength={200}
+            placeholder="Deixe vazio para tirar o texto do vídeo"
+            className="w-full resize-none rounded-xl border border-white/15 bg-black/20 px-3 py-2 text-[13px] leading-relaxed outline-none placeholder:text-muted focus:border-accent"
+          />
+          <div className="flex items-center gap-2">
+            <Button disabled={busy || text.trim() === current.trim()} onClick={() => void apply()}>
+              {busy ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Aplicar no vídeo
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setText(current)
+                setEditing(false)
+              }}
+            >
+              Cancelar
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted">O clipe é gerado de novo com o texto novo (uns 15 s) e volta para revisão.</p>
+          {err && <p className="text-[11px] text-err">{err}</p>}
+        </div>
+      ) : (
+        <p className={cx('rounded-xl bg-white/[0.04] px-3 py-2 text-[13px] leading-relaxed', !current && 'text-muted')}>
+          {rendering ? 'Gerando o clipe com o texto novo…' : current || 'Sem texto no vídeo'}
+        </p>
+      )}
+    </div>
   )
 }

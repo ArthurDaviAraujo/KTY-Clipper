@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildClipAss, cleanRect, clipFileName, clipRange, clipSize, groupWords, layoutPlan, planParts, toClipTime } from '../src/shared/clips'
-import { defaultSettings, sanitizeSettings } from '../src/shared/settings'
+import { buildClipAss, cleanRect, clipFileName, clipRange, clipSize, cropXForCenter, groupWords, layoutPlan, planParts, toClipTime } from '../src/shared/clips'
+import { defaultSettings, modalityPreset, sanitizeSettings } from '../src/shared/settings'
 
 const SRC = { w: 1920, h: 1080 }
 
@@ -38,7 +38,9 @@ describe('layoutPlan', () => {
     const g = p.graph.match(/\[g0\]crop=(\d+):(\d+):(\d+):(\d+)/)!.slice(1).map(Number)
     expect(g[1]).toBe(1080)
     expect(Math.abs(g[0] / g[1] - 1080 / (1920 - top))).toBeLessThan(0.01)
-    expect(g[2]).toBe(Math.round((1920 - g[0]) / 2 / 2) * 2)
+    // No meio, mas sem encostar na facecam (ela começa em 1440): o jogo embaixo não repete a câmera
+    expect(g[2] + g[0]).toBeLessThanOrEqual(1440)
+    expect(Math.abs(g[2] - (1920 - g[0]) / 2)).toBeLessThanOrEqual(12)
   })
   it('crop takes a 9:16 slice from the chosen position', () => {
     const center = layoutPlan('crop', SRC, out, null)
@@ -146,6 +148,23 @@ describe('captions', () => {
     expect(ass).toContain('Dialogue: 1,0:00:00.00,0:00:04.00,Title')
     expect(ass).not.toContain(',Cap,')
   })
+  it('custom look: font, other-words color, thick outline, black title box for 7 s', () => {
+    const ass = buildClipAss({
+      W: 1080,
+      H: 1920,
+      duration: 30,
+      captions: { words: [w('oi', 1, 1.3)], perGroup: 3, upper: false, color: '#ffd400', sizePct: 7.5, y: 1500, font: 'Impact', baseColor: '#a7f3d0', outline: 'thick' },
+      title: { text: 'Oi', y: 50, align: 8, always: false, seconds: 7, style: 'black' }
+    })
+    // Fonte, cor das outras palavras (BGR) e contorno 1,6x do normal (81 / 11 = 7,4 → 12)
+    expect(ass).toMatch(/Style: Cap,Impact,81,&H00D0F3A7,&H00D0F3A7,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,12,/)
+    // Caixa preta com letra branca
+    expect(ass).toMatch(/Style: Title,Segoe UI Black,\d+,&H00FFFFFF,&H00FFFFFF,&H00101010,/)
+    expect(ass).toContain('Dialogue: 1,0:00:00.00,0:00:07.00,Title')
+    // 0 s = o clipe todo
+    const all = buildClipAss({ W: 1080, H: 1920, duration: 30, captions: null, title: { text: 'Oi', y: 50, align: 8, always: false, seconds: 0 } })
+    expect(all).toContain('Dialogue: 1,0:00:00.00,0:00:30.00,Title')
+  })
 })
 
 describe('clipFileName', () => {
@@ -169,5 +188,52 @@ describe('clip settings', () => {
     expect(c.captions.color).toBe('#ffd400')
     expect(c.maxDurationS).toBe(10)
     expect(c.layout).toBe('split')
+  })
+})
+
+describe('clipRange with a minimum (modalities)', () => {
+  const m = { startUtc: 100_000, endUtc: 130_000, peakUtc: 115_000 }
+  it('a short moment grows to the minimum, more before than after', () => {
+    // 30 s + 4 s de margem = 34 s; mínimo 45 s: faltam 11 s (7,15 antes, 3,85 depois)
+    expect(clipRange(m, { padBeforeS: 2, padAfterS: 2, maxS: 90, minS: 45 })).toEqual({ fromUtc: 90_850, toUtc: 135_850 })
+  })
+  it('when the recording starts right before, the minimum comes from after', () => {
+    const r = clipRange(m, { padBeforeS: 2, padAfterS: 2, maxS: 90, minS: 45 }, { fromUtc: 97_000, toUtc: 400_000 })
+    expect(r).toEqual({ fromUtc: 97_000, toUtc: 142_000 })
+  })
+})
+
+describe('modality presets in settings', () => {
+  it('ships a preset for each modality, on by default', () => {
+    const s = defaultSettings()
+    expect(s.modalities.enabled).toBe(true)
+    expect(Object.keys(s.modalities.presets).sort()).toEqual(['creative', 'game', 'irl', 'sports', 'talk'])
+    expect(s.modalities.presets.talk.maxDurationS).toBeGreaterThan(s.modalities.presets.game.maxDurationS)
+  })
+  it('keeps values in range and the minimum below the maximum', () => {
+    const s = defaultSettings()
+    s.modalities.presets.talk = { layout: 'nada' as never, padBeforeS: -5, padAfterS: 999, minDurationS: 500, maxDurationS: 120, chatWeight: 7, audioWeight: -1 }
+    const p = sanitizeSettings(s).modalities.presets.talk
+    expect(p).toEqual({ layout: 'crop', padBeforeS: 0, padAfterS: 60, minDurationS: 120, maxDurationS: 120, chatWeight: 2, audioWeight: 0 })
+  })
+  it('modalityPreset is null when off or without a modality', () => {
+    const s = defaultSettings()
+    expect(modalityPreset(s, 'talk')?.layout).toBe('crop')
+    expect(modalityPreset(s, null)).toBeNull()
+    s.modalities.enabled = false
+    expect(modalityPreset(s, 'talk')).toBeNull()
+  })
+})
+
+describe('crop position from the facecam', () => {
+  it('centers the 9:16 crop on a point of a 16:9 frame', () => {
+    expect(cropXForCenter(0.5)).toBe(0.5)
+    // Rosto bem à esquerda: o recorte encosta na borda esquerda
+    expect(cropXForCenter(0.1)).toBe(0)
+    expect(cropXForCenter(0.95)).toBe(1)
+    // Rosto a 30% da largura: o recorte de 31,6% da largura fica com o meio em 30%
+    const x = cropXForCenter(0.3)
+    const r = (9 / 16) / (16 / 9)
+    expect(x * (1 - r) + r / 2).toBeCloseTo(0.3, 2)
   })
 })

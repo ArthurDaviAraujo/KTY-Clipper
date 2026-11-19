@@ -10,9 +10,11 @@ import { analyzeAudio } from './audio'
 import { findVoiceTriggers, transcribe, type SpeechTools } from './speech'
 import { BUCKET_S, classifyMessage, detectMoments, hypeSeries, type Bucket, type ClipSignal } from './detector'
 import { clipBelongs, clipWindow, kickClips, twitchClipPeriod, twitchClips } from './platforms/clips'
-import { geminiJson, QuotaError } from './ai/gemini'
-import { gameAt } from './games'
-import { buildReviewPrompt, combineScore, REVIEW_SCHEMA, REVIEW_SYSTEM, speechWithTimes, type AiVerdict, type MomentForAi } from './ai/review'
+import { QuotaError } from './ai/gemini'
+import { aiJson, type Backup } from './ai/backups'
+import { channelModality, gameAt, modalityAt, modalityTimeline } from './games'
+import { modalityPreset } from '../shared/settings'
+import { buildReviewPrompt, combineScore, REVIEW_SCHEMA, REVIEW_SYSTEM, rubricScore, speechWithTimes, type AiVerdict, type MomentForAi } from './ai/review'
 import type { MomentRecord, Settings, TimelinePoint } from '../shared/types'
 
 interface SegRow {
@@ -33,6 +35,8 @@ export interface MomentsDeps {
   speech: () => SpeechTools | null
   /** Chave e modelo do Gemini; null = sem IA de texto */
   gemini: () => { key: string; model: string } | null
+  /** Reservas da KaTY (Groq, OpenRouter, Mistral, IA local), em ordem */
+  backups?: () => Backup[]
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -58,8 +62,11 @@ interface LiveRow {
  */
 export class MomentsService extends EventEmitter {
   private lastQueued = new Map<number, number>()
+  /** Última busca de clipes da comunidade por live (ao vivo, a detecção roda a cada minuto) */
+  private clipsFetchedAt = new Map<number, number>()
   private quotaWarnedDay = ''
   private noKeyWarned = false
+  private noSpeechWarned = false
 
   constructor(private d: MomentsDeps) {
     super()
@@ -143,7 +150,8 @@ export class MomentsService extends EventEmitter {
     // 2) Fala com o Whisper (35–75%): serve para comando de voz, IA e legendas
     const needSpeech = s.detectors.speech.enabled || s.detectors.voiceTrigger.enabled || s.detectors.aiText.enabled
     const speech = needSpeech ? this.d.speech() : null
-    if (needSpeech && !speech) this.d.log.warn('fala', 'Whisper ou modelo não encontrado: momentos sem transcrição (veja Ajustes > Fala).')
+    if (needSpeech && !speech && !this.noSpeechWarned) this.d.log.warn('fala', 'Whisper ou modelo não encontrado: momentos sem transcrição (veja Ajustes > Fala).')
+    this.noSpeechWarned = needSpeech && !speech
     const pendingSpeech = speech ? segs.filter((x) => !x.speech_done && existsSync(x.path)) : []
     for (let i = 0; i < pendingSpeech.length; i++) {
       if (ctx.signal.aborted) throw ctx.signal.reason
@@ -167,6 +175,14 @@ export class MomentsService extends EventEmitter {
     const words = this.words(liveId, first, end)
     const voice = s.detectors.voiceTrigger.enabled ? findVoiceTriggers(words, s.detection.voiceTriggers) : []
     const clips = s.detectors.communityClips.enabled ? await this.refreshClips(live, first, end) : []
+    // Padrões por modalidade: os pesos de chat e áudio mudam conforme a categoria do instante do lance
+    const modalityOfT = modalityTimeline(this.db, liveId)
+    const weightAt = s.modalities.enabled
+      ? (t: number) => {
+          const p = modalityPreset(s, modalityOfT(t))
+          return p ? { chat: p.chatWeight, audio: p.audioWeight } : { chat: 1, audio: 1 }
+        }
+      : undefined
     const found = detectMoments(
       buckets,
       {
@@ -176,7 +192,8 @@ export class MomentsService extends EventEmitter {
         clipWeight: s.detectors.communityClips.enabled ? s.detectors.communityClips.weight : 0,
         minScore: s.detection.minScore,
         maxPerHour: s.detection.maxPerHour,
-        chatLagS: s.detection.chatLagS
+        chatLagS: s.detection.chatLagS,
+        weightAt
       },
       voice,
       clips
@@ -187,16 +204,20 @@ export class MomentsService extends EventEmitter {
     const oldAi = this.db
       .prepare(`SELECT peak_utc, ai FROM moments WHERE live_id = ? AND status = 'new' AND ai IS NOT NULL`)
       .all(liveId) as { peak_utc: number; ai: string }[]
+    // Miniaturas do mesmo lance também são reaproveitadas (ao vivo, a detecção roda a cada minuto)
+    const oldThumbs = this.db
+      .prepare(`SELECT peak_utc, thumb_path FROM moments WHERE live_id = ? AND status = 'new' AND thumb_path IS NOT NULL`)
+      .all(liveId) as { peak_utc: number; thumb_path: string }[]
     this.db.exec('BEGIN')
-    this.db.prepare(`DELETE FROM moments WHERE live_id = ? AND status = 'new'`).run(liveId)
+    this.db.prepare(`DELETE FROM moments WHERE live_id = ? AND status = 'new' AND json_extract(signals, '$.manual') IS NULL`).run(liveId)
     const insM = this.db.prepare(
-      `INSERT INTO moments(live_id, start_utc, end_utc, peak_utc, score, signals, title, ai, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+      `INSERT INTO moments(live_id, start_utc, end_utc, peak_utc, score, signals, title, ai, thumb_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
     )
     const samplesQ = this.db.prepare('SELECT user, text FROM chat_messages WHERE live_id = ? AND ts_utc BETWEEN ? AND ? ORDER BY ts_utc LIMIT 15')
-    const created: { id: number; peak: number }[] = []
+    const created: { id: number; peak: number; thumb: boolean }[] = []
     const now = Date.now()
     // Momentos que já viraram clipe (ou foram descartados) ficam; o mesmo lance não volta duplicado
-    const kept = this.db.prepare(`SELECT peak_utc FROM moments WHERE live_id = ? AND status != 'new'`).all(liveId) as { peak_utc: number }[]
+    const kept = this.db.prepare(`SELECT peak_utc FROM moments WHERE live_id = ? AND (status != 'new' OR json_extract(signals, '$.manual') IS NOT NULL)`).all(liveId) as { peak_utc: number }[]
     for (const m of found) {
       if (kept.some((k) => Math.abs(k.peak_utc - m.peakUtc) <= 15_000)) continue
       const samples = (samplesQ.all(liveId, m.peakUtc - 5000, m.peakUtc + 30_000) as { user: string; text: string }[]).map((x) => `${x.user}: ${x.text}`)
@@ -204,8 +225,9 @@ export class MomentsService extends EventEmitter {
       const prev = oldAi.find((o) => Math.abs(o.peak_utc - m.peakUtc) <= 15_000)
       const verdict = prev ? (JSON.parse(prev.ai) as AiVerdict) : null
       const score = verdict ? combineScore(m.score, verdict, !!(m.clip || m.voice)) : m.score
-      const row = insM.get(liveId, m.startUtc, m.endUtc, m.peakUtc, score, JSON.stringify(signals), verdict?.title_pt ?? null, prev?.ai ?? null, now) as { id: number }
-      created.push({ id: row.id, peak: m.peakUtc })
+      const thumb = oldThumbs.find((o) => Math.abs(o.peak_utc - m.peakUtc) <= 2_000 && existsSync(o.thumb_path))?.thumb_path ?? null
+      const row = insM.get(liveId, m.startUtc, m.endUtc, m.peakUtc, score, JSON.stringify(signals), verdict?.title_pt ?? null, prev?.ai ?? null, thumb, now) as { id: number }
+      created.push({ id: row.id, peak: m.peakUtc, thumb: !!thumb })
     }
     this.db.prepare('UPDATE lives SET detected_at = ? WHERE id = ?').run(now, liveId)
     this.db.exec('COMMIT')
@@ -214,6 +236,7 @@ export class MomentsService extends EventEmitter {
     // 5) Miniaturas (80–85%)
     for (let i = 0; i < created.length; i++) {
       if (ctx.signal.aborted) break
+      if (created[i].thumb) continue
       const seg = segs.find((x) => created[i].peak >= x.start_utc && created[i].peak < x.start_utc + (x.duration_s ?? 0) * 1000)
       if (!seg || !existsSync(seg.path)) continue
       const out = join(dirname(seg.path), 'miniaturas', `momento_${created[i].id}.jpg`)
@@ -242,50 +265,81 @@ export class MomentsService extends EventEmitter {
     const s = this.d.settings()
     if (s.ai.provider !== 'gemini') return 0
     const g = this.d.gemini()
-    if (!g) {
-      if (!this.noKeyWarned) this.d.log.warn('ia', 'Sem chave do Gemini: os momentos ficam sem título e sem revisão. Configure em Ajustes > Inteligência artificial.')
+    const backups = this.d.backups?.() ?? []
+    if (!g && !backups.length) {
+      if (!this.noKeyWarned) this.d.log.warn('ia', 'Sem chave do Gemini que funcione: os momentos ficam sem título e sem revisão. Cole a chave em Ajustes > IA e fala (se já tinha colado, cole de novo: a guardada não abre neste Windows).')
       this.noKeyWarned = true
       return 0
     }
     const today = new Date().toISOString().slice(0, 10)
     if (this.quotaWarnedDay === today) return 0
     const rows = this.db
-      .prepare(`SELECT id, start_utc, end_utc, peak_utc, signals FROM moments WHERE live_id = ? AND status = 'new' AND ai IS NULL ORDER BY score DESC LIMIT 40`)
+      .prepare(`SELECT id, start_utc, end_utc, peak_utc, signals FROM moments WHERE live_id = ? AND status IN ('new', 'kept') AND ai IS NULL ORDER BY score DESC LIMIT 40`)
       .all(live.id) as { id: number; start_utc: number; end_utc: number; peak_utc: number; signals: string }[]
     let done = 0
+    const retried = new Set<number>()
     const BATCH = 8
     for (let b = 0; b < rows.length; b += BATCH) {
       if (ctx.signal.aborted) break
       const batch = rows.slice(b, b + BATCH)
       const items: MomentForAi[] = batch.map((r) => {
         const sig = JSON.parse(r.signals)
-        const w = this.words(live.id, r.start_utc - 5000, r.end_utc + 5000)
+        // Janela larga em volta do lance: a IA escolhe onde a história começa e onde termina (o clipe não sai pela metade)
+        const win = this.window(r)
+        const w = this.words(live.id, win.from, win.to)
         return {
           id: r.id,
           durationS: (r.end_utc - r.start_utc) / 1000,
+          windowS: (win.to - win.from) / 1000,
+          fromS: (r.start_utc - win.from) / 1000,
+          toS: (r.end_utc - win.from) / 1000,
+          peakS: (r.peak_utc - win.from) / 1000,
           game: gameAt(this.db, live.id, r.peak_utc),
+          modality: channelModality(this.db, live.id),
           reasons: sig.reasons ?? [],
-          speech: speechWithTimes(w, r.start_utc),
+          speech: speechWithTimes(w, win.from),
           chat: sig.samples ?? []
         }
       })
       try {
-        const res = await geminiJson<{ moments: AiVerdict[] }>(
-          g.key,
-          g.model,
+        let used = g?.model ?? ''
+        const res = await aiJson<{ moments: AiVerdict[] }>(
+          { gemini: g, backups },
           REVIEW_SYSTEM,
           buildReviewPrompt({ channel: live.channel, liveTitle: live.title ?? '' }, items),
           REVIEW_SCHEMA,
-          ctx.signal
+          ctx.signal,
+          {
+            onFallback: (name, why) => {
+              used = name
+              this.d.log.info('ia', `Gemini fora (${why.slice(0, 80)}): a KaTY usou a reserva ${name}.`)
+            }
+          }
         )
-        for (const v of res.moments ?? []) {
+        for (const raw of res.moments ?? []) {
+          // A nota da IA é a soma das partes (gancho, desfecho, emoção, compartilhável), quando ela mandou
+          const v = { ...raw, score: rubricScore(raw) }
           const row = batch.find((r) => r.id === v.id)
           if (!row) continue
           const sig = JSON.parse(row.signals)
+          // Começo e fim do corte em hora real (valem só se fazem sentido e contêm o pico)
+          const win = this.window(row)
+          const a = Number(v.clip_start)
+          const b = Number(v.clip_end)
+          const cut =
+            Number.isFinite(a) && Number.isFinite(b) && b - a >= 8 && win.from + a * 1000 <= row.peak_utc && win.from + b * 1000 >= row.peak_utc
+              ? { clip_from_utc: Math.round(win.from + Math.max(0, a) * 1000), clip_to_utc: Math.round(win.from + b * 1000) }
+              : {}
           this.db
             .prepare('UPDATE moments SET ai = ?, title = ?, score = ? WHERE id = ?')
-            .run(JSON.stringify({ ...v, model: g.model }), v.title_pt, combineScore(sig.detectorScore ?? 50, v, !!(sig.clip || sig.voice)), v.id)
+            .run(JSON.stringify({ ...v, ...cut, model: used }), v.title_pt, combineScore(sig.detectorScore ?? 50, v, !!(sig.clip || sig.voice)), v.id)
           done++
+        }
+        // A IA às vezes devolve só parte do lote (visto em 2026-11-18: 5 de 12): os que faltaram voltam uma vez no fim
+        const answered = new Set((res.moments ?? []).map((v) => v.id))
+        for (const r of batch) if (!answered.has(r.id) && !retried.has(r.id)) {
+          retried.add(r.id)
+          rows.push(r)
         }
         this.emit('moments', live.id)
       } catch (e) {
@@ -316,9 +370,13 @@ export class MomentsService extends EventEmitter {
    * Se a busca falhar, usa os que já estavam guardados.
    */
   private async refreshClips(live: LiveRow, first: number, end: number): Promise<ClipSignal[]> {
+    // Durante a gravação, busca no máximo a cada 5 min (a detecção ao vivo roda a cada minuto)
+    const ongoing = live.kind === 'live' && live.ended_at == null
+    if (ongoing && Date.now() - (this.clipsFetchedAt.get(live.id) ?? 0) < 5 * 60_000) return this.storedClips(live.id)
+    this.clipsFetchedAt.set(live.id, Date.now())
     try {
       const found =
-        live.platform === 'twitch' ? await twitchClips(live.login, twitchClipPeriod(live.started_at)) : await kickClips(live.login)
+        live.platform === 'twitch' ? await twitchClips(live.login, twitchClipPeriod(live.started_at)) : live.platform === 'kick' ? await kickClips(live.login) : []
       const ref = {
         vodId: live.kind === 'vod' && live.platform === 'twitch' ? live.platform_stream_id : null,
         broadcastId: live.kind === 'live' ? live.platform_stream_id : live.broadcast_id,
@@ -340,8 +398,12 @@ export class MomentsService extends EventEmitter {
     } catch (e) {
       this.d.log.warn('clipes', `Não deu para buscar os clipes da comunidade: ${(e as Error).message}`)
     }
+    return this.storedClips(live.id)
+  }
+
+  private storedClips(liveId: number): ClipSignal[] {
     return (
-      this.db.prepare('SELECT start_utc, end_utc, views, title, url FROM community_clips WHERE live_id = ?').all(live.id) as {
+      this.db.prepare('SELECT start_utc, end_utc, views, title, url FROM community_clips WHERE live_id = ?').all(liveId) as {
         start_utc: number
         end_utc: number
         views: number
@@ -349,6 +411,11 @@ export class MomentsService extends EventEmitter {
         url: string | null
       }[]
     ).map((c) => ({ startUtc: c.start_utc, endUtc: c.end_utc, views: c.views, title: c.title ?? '', url: c.url ?? '' }))
+  }
+
+  /** Fala mostrada à IA: 45 s antes do lance até 45 s depois (o bastante para o começo da história e a reação). */
+  private window(r: { start_utc: number; end_utc: number }): { from: number; to: number } {
+    return { from: r.start_utc - 45_000, to: r.end_utc + 45_000 }
   }
 
   private words(liveId: number, from: number, to: number): { t: number; text: string }[] {
@@ -394,14 +461,17 @@ export class MomentsService extends EventEmitter {
     return hypeSeries(this.buildBuckets(liveId, r.a, r.b), 30).map((p) => ({ s: Math.round((p.t - live.started_at) / 1000), chat: p.chat, audio: p.audio }))
   }
 
-  list(liveId?: number): MomentRecord[] {
+  /** Momentos de uma live (ou de todas), ou só os ids pedidos (busca). */
+  list(liveId?: number, ids?: number[]): MomentRecord[] {
+    if (ids && !ids.length) return []
+    const where = ids ? `WHERE m.id IN (${ids.map(() => '?').join(',')})` : liveId != null ? 'WHERE m.live_id = ?' : ''
     const rows = this.db
       .prepare(
         `SELECT m.*, l.started_at, l.title AS live_title, l.kind, c.platform, COALESCE(c.display_name, c.login) AS channel_name
          FROM moments m JOIN lives l ON l.id = m.live_id JOIN channels c ON c.id = l.channel_id
-         ${liveId != null ? 'WHERE m.live_id = ?' : ''} ORDER BY m.score DESC LIMIT 300`
+         ${where} ORDER BY m.score DESC LIMIT ${ids ? ids.length : 300}`
       )
-      .all(...(liveId != null ? [liveId] : [])) as Record<string, any>[]
+      .all(...(ids ?? (liveId != null ? [liveId] : []))) as Record<string, any>[]
     return rows.map((m) => {
       const sig = JSON.parse(m.signals || '{}')
       const ai = m.ai ? (JSON.parse(m.ai) as AiVerdict & { model?: string }) : null
@@ -416,6 +486,7 @@ export class MomentsService extends EventEmitter {
         liveTitle: m.live_title ?? '',
         liveKind: m.kind,
         game: gameAt(this.db, m.live_id, m.peak_utc),
+        modality: modalityAt(this.db, m.live_id, m.peak_utc),
         peakS: (m.peak_utc - m.started_at) / 1000,
         startS: (m.start_utc - m.started_at) / 1000,
         endS: (m.end_utc - m.started_at) / 1000,
@@ -429,12 +500,52 @@ export class MomentsService extends EventEmitter {
         samples: sig.samples ?? [],
         speech,
         ai: ai
-          ? { keep: ai.keep, score: ai.score, category: ai.category, titlePt: ai.title_pt, titleEn: ai.title_en, reason: ai.reason, hashtags: ai.hashtags, model: ai.model ?? null }
+          ? {
+              keep: ai.keep,
+              score: ai.score,
+              category: ai.category,
+              titlePt: ai.title_pt,
+              titleEn: ai.title_en,
+              reason: ai.reason,
+              hashtags: ai.hashtags,
+              model: ai.model ?? null,
+              hook: ai.gancho ?? null,
+              analysis: ai.analise ?? null,
+              parts: ai.notas ?? null
+            }
           : null,
         hasThumb: !!m.thumb_path && existsSync(m.thumb_path),
         status: m.status
       }
     })
+  }
+
+  /**
+   * Momento criado à mão num instante da live (ex.: um trecho achado na busca pela fala).
+   * Fica até virar clipe ou ser descartado; a detecção não o troca.
+   */
+  createAt(liveId: number, tMs: number, label: string): number {
+    const seg = this.db
+      .prepare(`SELECT 1 FROM segments WHERE live_id = ? AND status != 'deleted' AND start_utc <= ? AND start_utc + COALESCE(duration_s, 0) * 1000 > ?`)
+      .get(liveId, tMs, tMs)
+    if (!seg) throw new Error('A gravação deste trecho não existe mais.')
+    const near = this.db
+      .prepare(`SELECT id FROM moments WHERE live_id = ? AND status != 'dismissed' AND ABS(peak_utc - ?) <= 10000 ORDER BY ABS(peak_utc - ?) LIMIT 1`)
+      .get(liveId, tMs, tMs) as { id: number } | undefined
+    if (near) return near.id
+    const samples = (
+      this.db.prepare('SELECT user, text FROM chat_messages WHERE live_id = ? AND ts_utc BETWEEN ? AND ? ORDER BY ts_utc LIMIT 15').all(liveId, tMs - 5000, tMs + 30_000) as {
+        user: string
+        text: string
+      }[]
+    ).map((x) => `${x.user}: ${x.text}`)
+    const reason = `Achado na busca: ${label.slice(0, 80)}`
+    const signals = { reasons: [reason], samples, detectorScore: 50, manual: true }
+    const row = this.db
+      .prepare(`INSERT INTO moments(live_id, start_utc, end_utc, peak_utc, score, signals, title, created_at) VALUES (?, ?, ?, ?, 50, ?, ?, ?) RETURNING id`)
+      .get(liveId, tMs - 15_000, tMs + 15_000, tMs, JSON.stringify(signals), label.slice(0, 120), Date.now()) as { id: number }
+    this.emit('moments', liveId)
+    return row.id
   }
 
   /** Tira o momento da lista: não vira clipe e não volta na próxima detecção. */

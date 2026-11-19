@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { modalityOf, normalizeCategory } from '../src/shared/modality'
 import { buildReviewPrompt, categoryLine, REVIEW_SYSTEM } from '../src/main/ai/review'
 import { openDb } from '../src/main/db'
-import { gameAt, gamesOf, noteGame } from '../src/main/games'
+import { channelModality, gameAt, gamesOf, modalityAt, modalityTimeline, noteGame } from '../src/main/games'
 
 describe('modality of a category', () => {
   it('knows the non-game categories of Twitch and Kick', () => {
@@ -76,5 +76,36 @@ describe('category along the live', () => {
     noteGame(db, 1, 1000, 'Just Chatting')
     db.prepare('DELETE FROM lives WHERE id = 1').run()
     expect(gamesOf(db, 1)).toEqual([])
+  })
+})
+
+describe('modality of a live, fixed per channel', () => {
+  const setup = () => {
+    const db = openDb(':memory:')
+    db.prepare(`INSERT INTO channels(platform, login, created_at) VALUES ('twitch', 'x', 0)`).run()
+    db.prepare(`INSERT INTO lives(channel_id, started_at, platform_stream_id, game) VALUES (1, 1000, 's1', 'Just Chatting')`).run()
+    noteGame(db, 1, 1000, 'Just Chatting')
+    noteGame(db, 1, 100_000, 'Grand Theft Auto VI')
+    return db
+  }
+  it('follows the category when the channel is automatic', () => {
+    const db = setup()
+    expect(modalityAt(db, 1, 50_000)).toBe('talk')
+    expect(modalityAt(db, 1, 150_000)).toBe('game')
+    const at = modalityTimeline(db, 1)
+    expect([at(0), at(50_000), at(150_000)]).toEqual(['talk', 'talk', 'game'])
+  })
+  it('a modality fixed on the channel wins over the category', () => {
+    const db = setup()
+    db.prepare(`UPDATE channels SET modality = 'talk' WHERE id = 1`).run()
+    expect(channelModality(db, 1)).toBe('talk')
+    expect(modalityAt(db, 1, 150_000)).toBe('talk')
+    expect(modalityTimeline(db, 1)(150_000)).toBe('talk')
+    // valor estranho no banco vale como automático
+    db.prepare(`UPDATE channels SET modality = 'xyz' WHERE id = 1`).run()
+    expect(modalityAt(db, 1, 150_000)).toBe('game')
+  })
+  it('the AI is told when the modality was fixed for the channel', () => {
+    expect(categoryLine('Grand Theft Auto VI', 'talk')).toBe('Grand Theft Auto VI (conversa, definida para o canal)')
   })
 })

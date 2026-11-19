@@ -34,6 +34,11 @@ export interface DetectParams {
   maxPerHour: number
   /** Quantos segundos o chat costuma reagir depois do lance */
   chatLagS: number
+  /**
+   * Multiplicadores dos pesos de chat e áudio no instante do lance (padrões por modalidade:
+   * uma live pode passar de conversa para jogo). Sem isto, vale 1.
+   */
+  weightAt?: (t: number) => { chat: number; audio: number }
 }
 
 export const DEFAULT_PARAMS: DetectParams = { chatWeight: 0.8, audioWeight: 0.6, minScore: 35, maxPerHour: 10, chatLagS: 12 }
@@ -246,8 +251,9 @@ export function detectMoments(buckets: Bucket[], p: DetectParams = DEFAULT_PARAM
   const first = buckets[0].t
   const last = buckets[buckets.length - 1].t + ms(BUCKET_S)
   let out: MomentCandidate[] = raws.map((r) => {
-    const cs = r.chat ? p.chatWeight * r.chat.score : 0
-    const as = r.audio ? p.audioWeight * r.audio.score : 0
+    const w = p.weightAt?.(r.anchor) ?? { chat: 1, audio: 1 }
+    const cs = r.chat ? clamp(p.chatWeight * w.chat * r.chat.score) : 0
+    const as = r.audio ? clamp(p.audioWeight * w.audio * r.audio.score) : 0
     // Pedido explícito do streamer vale muito por si só (0,9 × peso)
     const vs = r.voice ? (p.voiceWeight ?? 0) * 0.9 : 0
     const ks = r.clip ? (p.clipWeight ?? 0) * clipStrength(r.clip.views) : 0

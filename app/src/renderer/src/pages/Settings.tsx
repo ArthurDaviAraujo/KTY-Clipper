@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { ExternalLink, FolderOpen, KeyRound, RotateCcw } from 'lucide-react'
-import { DETECTORS } from '../../../shared/settings'
+import { CAPTION_FONTS, DETECTORS } from '../../../shared/settings'
 import { LAYOUTS } from '../../../shared/clips'
 import { FAMILY_LABEL, pickEncoder } from '../../../shared/encoders'
-import type { AiProvider, AiStatus } from '../../../shared/types'
+import type { AiBackupStatus, AiProvider, AiStatus, CaptionFont, ClipLayout, DeepPartial, Modality, ModalityPreset, Settings } from '../../../shared/types'
 import type { AppState } from '../state'
-import { Badge, Button, Card, PageHeader, Progress, Section, Segmented, Toggle } from '../ui'
+import { Badge, Button, Card, GearStar, PageHeader, Progress, Section, Segmented, Toggle, cx } from '../ui'
 import { SystemPanel } from './System'
 import { ProfilePanel } from './Profile'
 
@@ -43,6 +43,143 @@ function NumberRow({ label, hint, unit, value, onChange }: { label: string; hint
         />
         <span className="text-sm text-muted">{unit}</span>
       </div>
+    </div>
+  )
+}
+
+/** Número pequeno para tabelas (salva ao sair do campo ou com Enter). */
+function MiniNumber({ value, step = 1, label, onChange }: { value: number; step?: number; label: string; onChange: (v: number) => void }) {
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => setDraft(String(value)), [value])
+  const commit = () => {
+    const n = Number(draft.replace(',', '.'))
+    if (Number.isFinite(n) && n !== value) onChange(n)
+    else setDraft(String(value))
+  }
+  return (
+    <input
+      type="number"
+      step={step}
+      min={0}
+      aria-label={label}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+      className="w-16 rounded-lg border border-line bg-panel px-2 py-1 text-right text-[13px] tabular-nums outline-none focus:border-accent"
+    />
+  )
+}
+
+const MODALITY_ROWS: { id: Modality; label: string; hint: string }[] = [
+  { id: 'game', label: 'Jogo', hint: 'Qualquer jogo' },
+  { id: 'talk', label: 'Conversa', hint: 'Just Chatting, podcast, react' },
+  { id: 'irl', label: 'IRL', hint: 'Rua, viagem, eventos' },
+  { id: 'sports', label: 'Esporte', hint: 'Transmissões de esporte' },
+  { id: 'creative', label: 'Criativo', hint: 'Música, arte, criação' }
+]
+
+function ModalityPresets({ s, updateSettings }: { s: Settings; updateSettings: AppState['updateSettings'] }) {
+  const set = (id: Modality, patch: Partial<ModalityPreset>) => void updateSettings({ modalities: { presets: { [id]: patch } } } as DeepPartial<Settings>)
+  const on = s.modalities.enabled
+  return (
+    <Section title="Por modalidade">
+      <Card className="flex items-center gap-4">
+        <Toggle label="Padrões por modalidade" checked={on} onChange={(v) => void updateSettings({ modalities: { enabled: v } })} />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">Ajustar cada clipe à modalidade da live</p>
+          <p className="text-xs text-muted">
+            A categoria da Twitch ou da Kick no instante do lance escolhe a linha abaixo (ou a modalidade fixada no canal). Live sem categoria, ou com isto desligado, usa o
+            layout e a duração acima. Os pesos multiplicam os da Detecção.
+          </p>
+        </div>
+      </Card>
+      <Card className={on ? 'overflow-x-auto' : 'overflow-x-auto opacity-50'}>
+        <table className="w-full min-w-[760px] text-left text-[13px]">
+          <thead className="text-[11px] uppercase tracking-wide text-muted">
+            <tr>
+              <th className="pb-2 font-medium">Modalidade</th>
+              <th className="pb-2 font-medium">Layout</th>
+              <th className="pb-2 font-medium">Duração (s)</th>
+              <th className="pb-2 font-medium">Margem (s)</th>
+              <th className="pb-2 font-medium">Peso do chat</th>
+              <th className="pb-2 font-medium">Peso do áudio</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line/60">
+            {MODALITY_ROWS.map((m) => {
+              const p = s.modalities.presets[m.id]
+              return (
+                <tr key={m.id}>
+                  <td className="py-2.5 pr-3">
+                    <p className="font-medium">{m.label}</p>
+                    <p className="text-[11px] text-muted">{m.hint}</p>
+                  </td>
+                  <td className="py-2.5 pr-3">
+                    <select
+                      aria-label={`Layout de ${m.label}`}
+                      disabled={!on}
+                      value={p.layout}
+                      onChange={(e) => set(m.id, { layout: e.target.value as ClipLayout })}
+                      className="rounded-lg border border-line bg-panel px-2 py-1 text-[13px] outline-none focus:border-accent"
+                    >
+                      {LAYOUTS.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.label}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-2.5 pr-3">
+                    <span className="flex items-center gap-1.5 text-muted">
+                      <MiniNumber label={`Duração mínima de ${m.label}`} value={p.minDurationS} onChange={(v) => set(m.id, { minDurationS: v })} />a
+                      <MiniNumber label={`Duração máxima de ${m.label}`} value={p.maxDurationS} onChange={(v) => set(m.id, { maxDurationS: v })} />
+                    </span>
+                  </td>
+                  <td className="py-2.5 pr-3">
+                    <span className="flex items-center gap-1.5 text-[11px] text-muted">
+                      antes <MiniNumber label={`Margem antes de ${m.label}`} value={p.padBeforeS} onChange={(v) => set(m.id, { padBeforeS: v })} />
+                      depois <MiniNumber label={`Margem depois de ${m.label}`} value={p.padAfterS} onChange={(v) => set(m.id, { padAfterS: v })} />
+                    </span>
+                  </td>
+                  <td className="py-2.5 pr-3">
+                    <span className="flex items-center gap-1 text-muted">
+                      × <MiniNumber label={`Peso do chat em ${m.label}`} step={0.1} value={p.chatWeight} onChange={(v) => set(m.id, { chatWeight: v })} />
+                    </span>
+                  </td>
+                  <td className="py-2.5">
+                    <span className="flex items-center gap-1 text-muted">
+                      × <MiniNumber label={`Peso do áudio em ${m.label}`} step={0.1} value={p.audioWeight} onChange={(v) => set(m.id, { audioWeight: v })} />
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <p className="mt-3 text-xs text-muted">
+          Padrões iniciais, para ajustar com o uso: conversa ganha mais contexto antes do lance e clipes mais longos; IRL e conversa saem em recorte (rosto em pé); esporte e
+          criativo mostram a tela toda. Shorts aceita até 3 min e TikTok até 10 min.
+        </p>
+      </Card>
+    </Section>
+  )
+}
+
+/** Prévia da legenda com a fonte, as cores, o contorno e as maiúsculas escolhidas (a palavra do meio é a falada). */
+function CaptionPreview({ s }: { s: Settings }) {
+  const c = s.clips.captions
+  const stroke = { thin: 1.5, normal: 2.5, thick: 4 }[c.outline]
+  const words = ['olha', 'esse', 'lance'].map((w) => (c.upper ? w.toUpperCase() : w))
+  return (
+    <div className="grid h-24 place-items-center rounded-xl bg-[linear-gradient(135deg,#3a2f4f,#1d4e5f)]">
+      <p style={{ fontFamily: c.font, fontWeight: 900, fontSize: 26, WebkitTextStroke: `${stroke}px #000`, paintOrder: 'stroke fill' }}>
+        {words.map((w, i) => (
+          <span key={w} style={{ color: i === 1 ? c.color : c.baseColor, fontSize: i === 1 ? 28 : 26 }}>
+            {w}{' '}
+          </span>
+        ))}
+      </p>
     </div>
   )
 }
@@ -143,7 +280,7 @@ function GeminiKeyCard() {
         <div className="flex items-center gap-2">
           <KeyRound size={16} className="text-gold" />
           <p className="text-sm font-medium">Chave do Gemini</p>
-          {status?.hasKey ? <Badge tone="ok">configurada · {status.model}</Badge> : <Badge tone="warn">sem chave</Badge>}
+          {status?.hasKey ? <Badge tone="ok">configurada · {status.model}</Badge> : status?.keyUnreadable ? <Badge tone="warn">cole a chave de novo</Badge> : <Badge tone="warn">sem chave</Badge>}
         </div>
         <Button variant="ghost" onClick={() => void window.api.openExternal('https://aistudio.google.com/apikey')}>
           <ExternalLink size={14} /> Criar chave grátis
@@ -171,6 +308,113 @@ function GeminiKeyCard() {
         )}
       </div>
       {error && <p className="text-xs text-err">{error}</p>}
+    </Card>
+  )
+}
+
+/**
+ * Reservas da KaTY: quando o Gemini não responde (sobrecarregado, cota do dia ou sem chave), a análise vai para a
+ * próxima da fila, na ordem desta lista. O app escolhe o modelo de cada uma sozinho.
+ */
+function BackupsCard({ localOn, setLocalOn }: { localOn: boolean; setLocalOn: (v: boolean) => void }) {
+  const [list, setList] = useState<AiBackupStatus[]>([])
+  const [keys, setKeys] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<Record<string, string>>({})
+  const [tests, setTests] = useState<Record<string, string>>({})
+  useEffect(() => void window.api.aiBackups().then(setList), [localOn])
+  const run = async (id: string, f: () => Promise<AiBackupStatus[]>) => {
+    setBusy(id)
+    setError((e) => ({ ...e, [id]: '' }))
+    try {
+      setList(await f())
+      setKeys((k) => ({ ...k, [id]: '' }))
+    } catch (e) {
+      setError((x) => ({ ...x, [id]: clean(e) }))
+    } finally {
+      setBusy(null)
+    }
+  }
+  const readyCount = list.filter((b) => b.ready).length
+  return (
+    <Card className="space-y-4">
+      <div>
+        <p className="flex items-center gap-2 text-sm font-medium">
+          Reservas da KaTY {readyCount > 0 ? <Badge tone="ok">{readyCount} pronta(s)</Badge> : <Badge tone="muted">nenhuma</Badge>}
+        </p>
+        <p className="text-xs text-muted">
+          Quando o Gemini não responde (sobrecarregado, cota do dia esgotada ou sem chave), a KaTY usa a próxima desta lista, nesta ordem. Todas são grátis; o app
+          escolhe o modelo sozinho. As chaves ficam guardadas criptografadas neste PC.
+        </p>
+      </div>
+      <div className="divide-y divide-white/[0.06] rounded-xl border border-white/[0.06]">
+        {list.map((b, i) => (
+          <div key={b.id} className="space-y-2 px-3 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="grid size-5 place-items-center rounded-full bg-white/[0.08] text-[11px] text-muted">{i + 1}</span>
+              <p className="text-sm font-medium">{b.name}</p>
+              {b.ready ? <Badge tone="ok">pronta · {b.model}</Badge> : b.hasKey ? <Badge tone="warn">cole a chave de novo</Badge> : <Badge tone="muted">{b.needsKey ? 'sem chave' : 'desligada'}</Badge>}
+              <span className="flex-1" />
+              {/* Só com o app reiniciado: a tela recarrega sozinha antes do resto do app ter a função */}
+              {b.ready && typeof window.api.testBackup === 'function' && (
+                <Button
+                  variant="ghost"
+                  disabled={busy != null}
+                  onClick={async () => {
+                    setBusy(`teste-${b.id}`)
+                    setError((x) => ({ ...x, [b.id]: '' }))
+                    try {
+                      const r = await window.api.testBackup(b.id)
+                      setTests((t) => ({ ...t, [b.id]: `Respondeu em ${(r.ms / 1000).toFixed(1)} s: “${r.answer}”` }))
+                    } catch (e) {
+                      setError((x) => ({ ...x, [b.id]: clean(e) }))
+                    } finally {
+                      setBusy(null)
+                    }
+                  }}
+                >
+                  {busy === `teste-${b.id}` ? 'Testando…' : 'Testar'}
+                </Button>
+              )}
+              {b.keyUrl && (
+                <Button variant="ghost" onClick={() => void window.api.openExternal(b.keyUrl!)}>
+                  <ExternalLink size={14} /> {b.needsKey ? 'Criar chave grátis' : 'Baixar o Ollama'}
+                </Button>
+              )}
+            </div>
+            <p className="text-xs text-muted">{b.note}</p>
+            {b.needsKey ? (
+              <div className="flex flex-wrap gap-2">
+                <input
+                  type="password"
+                  value={keys[b.id] ?? ''}
+                  onChange={(e) => setKeys((k) => ({ ...k, [b.id]: e.target.value }))}
+                  placeholder={b.hasKey ? 'Colar outra chave para trocar' : 'Colar a chave aqui'}
+                  className="min-w-64 flex-1 rounded-xl border border-line bg-panel px-3 py-1.5 text-sm outline-none focus:border-accent"
+                />
+                <Button onClick={() => void run(b.id, () => window.api.setBackupKey(b.id, keys[b.id] ?? ''))} disabled={busy != null || !(keys[b.id] ?? '').trim()}>
+                  {busy === b.id ? 'Testando…' : 'Salvar e testar'}
+                </Button>
+                {b.hasKey && (
+                  <Button variant="ghost" onClick={() => void run(b.id, () => window.api.setBackupKey(b.id, ''))} disabled={busy != null}>
+                    Apagar chave
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3">
+                <Toggle label="Usar a IA local como última reserva" checked={localOn} onChange={setLocalOn} />
+                <span className="text-xs text-muted">Usar como última reserva</span>
+                <Button variant="ghost" onClick={() => void run(b.id, () => window.api.checkLocalAi())} disabled={busy != null}>
+                  {busy === b.id ? 'Procurando…' : b.model ? 'Procurar de novo' : 'Procurar no PC'}
+                </Button>
+              </div>
+            )}
+            {tests[b.id] && !error[b.id] && <p className="text-xs text-ok">{tests[b.id]}</p>}
+            {error[b.id] && <p className="text-xs text-err">{error[b.id]}</p>}
+          </div>
+        ))}
+      </div>
     </Card>
   )
 }
@@ -225,12 +469,19 @@ function SpeechCard({ state }: { state: AppState }) {
   )
 }
 
-export type SettingsTab = 'deteccao' | 'ia' | 'clipes' | 'gravacao' | 'armazenamento' | 'perfil' | 'sistema'
+/** Ajustes (aba do topo): tudo o que muda os clipes */
+export type ClipTab = 'corte' | 'visual' | 'deteccao' | 'postagem'
+/** Configurações (engrenagem): o app em si */
+export type ConfigTab = 'ia' | 'gravacao' | 'armazenamento' | 'perfil' | 'sistema'
+export type SettingsTab = ClipTab | ConfigTab
+export const CONFIG_TABS: ConfigTab[] = ['ia', 'gravacao', 'armazenamento', 'perfil', 'sistema']
 
 const TITLES: Record<SettingsTab, { title: string; subtitle: string }> = {
+  corte: { title: 'Corte', subtitle: 'Quando um lance vira clipe sozinho e de que tamanho, também por modalidade.' },
+  visual: { title: 'Visual', subtitle: 'Layout, legenda, título na tela e qualidade do vídeo do clipe.' },
   deteccao: { title: 'Detecção', subtitle: 'Quais sinais viram momento e com que força.' },
-  ia: { title: 'IA e fala', subtitle: 'Transcrição com o Whisper e revisão dos momentos pela IA.' },
-  clipes: { title: 'Clipes', subtitle: 'Layout, legenda, título, duração e qualidade dos clipes.' },
+  postagem: { title: 'Postagem', subtitle: 'Pasta para postar, redes e o que fazer com os descartados.' },
+  ia: { title: 'KaTY e IA', subtitle: 'Chave do Gemini, reservas, transcrição com o Whisper e a conversa com a KaTY.' },
   gravacao: { title: 'Gravação', subtitle: 'Como as lives são vigiadas e gravadas.' },
   armazenamento: { title: 'Armazenamento', subtitle: 'Onde ficam as gravações e os clipes, e o limite de espaço.' },
   perfil: { title: 'Perfil', subtitle: 'Cada perfil guarda os próprios ajustes e predefinições.' },
@@ -246,6 +497,13 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
   return (
     <div className="mx-auto w-full max-w-[1100px] space-y-8">
       <PageHeader
+        top={
+          (CONFIG_TABS as string[]).includes(tab) ? (
+            <>
+              <GearStar size={24} className="text-muted" /> Configurações
+            </>
+          ) : undefined
+        }
         title={TITLES[tab].title}
         subtitle={TITLES[tab].subtitle}
         action={
@@ -366,11 +624,17 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
           ))}
         </div>
         {s.ai.provider === 'gemini' && <GeminiKeyCard />}
+        <BackupsCard localOn={s.ai.fallbackToLocal} setLocalOn={(v) => void updateSettings({ ai: { fallbackToLocal: v } })} />
+      </Section>
+
+      <Section title="KaTY">
         <Card className="flex items-center gap-4">
-          <Toggle label="Usar IA local quando a cota acabar" checked={s.ai.fallbackToLocal} onChange={(v) => void updateSettings({ ai: { fallbackToLocal: v } })} />
+          <Toggle label="KaTY" checked={s.assistant.enabled} onChange={(v) => void updateSettings({ assistant: { enabled: v } })} />
           <div>
-            <p className="text-sm font-medium">Usar a IA local quando a cota do provedor acabar</p>
-            <p className="text-xs text-muted">Vale quando a IA local estiver pronta. Por enquanto o app espera a cota voltar e revisa o que faltou depois.</p>
+            <p className="text-sm font-medium">KaTY, a IA que conversa e usa o app por você</p>
+            <p className="text-xs text-muted">
+              Aba "KaTY" e barra lateral. Usa o Gemini acima e a mesma cota grátis da revisão dos momentos. Ações que apagam ou param algo sempre pedem confirmação.
+            </p>
           </div>
         </Card>
       </Section>
@@ -378,7 +642,146 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
         </>
       )}
 
-      {tab === 'clipes' && (
+      {tab === 'corte' && (
+        <>
+      <Section title="Clipes automáticos">
+        <Card className="space-y-4">
+          <div className="flex items-center gap-4">
+            <Toggle label="Gerar clipes sozinho" checked={s.clips.auto.enabled} onChange={(v) => void updateSettings({ clips: { auto: { enabled: v } } })} />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">Gerar sozinho os clipes dos momentos fortes</p>
+              <p className="text-xs text-muted">
+                Depois de cada detecção, os momentos com nota a partir do valor ao lado viram clipe com o layout padrão. Com a KaTY ligada, espera o título dela;
+                os que ela descartou ficam de fora (menos os clipados pela comunidade).
+              </p>
+            </div>
+            <NumberInput value={s.clips.auto.minScore} unit="nota" onChange={(v) => void updateSettings({ clips: { auto: { minScore: v } } })} />
+          </div>
+          <div className={cx('flex items-center gap-4', !s.clips.auto.enabled && 'opacity-50')}>
+            <Toggle label="Clipar ao vivo" checked={s.clips.live.enabled} onChange={(v) => void updateSettings({ clips: { live: { enabled: v } } })} />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">Clipar ao vivo, com poucos minutos de atraso</p>
+              <p className="text-xs text-muted">
+                Grava em pedaços de 1 min e procura momentos a cada minuto: o clipe fica pronto uns 3 a 5 min depois do lance, ainda com a live no ar. Desligado,
+                procura a cada 5 min e o clipe sai uns 10 a 20 min depois. Vale para as próximas gravações.
+              </p>
+            </div>
+          </div>
+        </Card>
+      </Section>
+
+      <Section title="Tamanho do corte">
+        <Card className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-3">
+            <div>
+              <p className="mb-1 text-sm font-medium">Margem antes</p>
+              <NumberInput value={s.clips.padBeforeS} unit="s" onChange={(v) => void updateSettings({ clips: { padBeforeS: v } })} />
+            </div>
+            <div>
+              <p className="mb-1 text-sm font-medium">Margem depois</p>
+              <NumberInput value={s.clips.padAfterS} unit="s" onChange={(v) => void updateSettings({ clips: { padAfterS: v } })} />
+            </div>
+            <div>
+              <p className="mb-1 text-sm font-medium">Duração máxima</p>
+              <NumberInput value={s.clips.maxDurationS} unit="s" onChange={(v) => void updateSettings({ clips: { maxDurationS: v } })} />
+            </div>
+          </div>
+          <p className="-mt-2 text-xs text-muted">
+            Momento mais longo que o máximo é cortado em volta do pico (mais tempo antes do que depois). Quando a KaTY escolhe o começo e o fim da história, vale o corte
+            dela (até 2:30). Com os padrões por modalidade ligados, estes valores e o layout valem só para lives sem categoria.
+          </p>
+        </Card>
+      </Section>
+
+      <Section title="Recorte fino">
+        <Card className="space-y-4">
+          <div className="flex items-center gap-4">
+            <Toggle label="Encaixar na fala" checked={s.clips.snapToSpeech} onChange={(v) => void updateSettings({ clips: { snapToSpeech: v } })} />
+            <div>
+              <p className="text-sm font-medium">Encaixar o começo e o fim na fala</p>
+              <p className="text-xs text-muted">O corte não começa nem termina no meio de uma palavra ou frase (anda até 2,5 s para achar a pausa).</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">Tirar as pausas longas</p>
+              <p className="text-xs text-muted">
+                Corta os silêncios de dentro do clipe (jump cut), com um respiro curto em cada emenda. Em jogo só corta onde o som também está baixo, para não
+                perder ação sem fala. Nunca tira mais de 35% do corte.
+              </p>
+            </div>
+            <Segmented
+              value={s.clips.cutSilences}
+              onChange={(v) => void updateSettings({ clips: { cutSilences: v } })}
+              options={[
+                { value: 'off', label: 'Não' },
+                { value: 'talk', label: 'Só em conversa' },
+                { value: 'all', label: 'Em tudo' }
+              ]}
+            />
+          </div>
+        </Card>
+      </Section>
+
+      <ModalityPresets s={s} updateSettings={updateSettings} />
+        </>
+      )}
+
+      {tab === 'postagem' && (
+        <>
+      <Section title="Postagem">
+        <Card className="space-y-4">
+          <div className="flex items-center gap-4">
+            <Toggle label="Copiar ao aprovar" checked={s.publishing.exportOnApprove} onChange={(v) => void updateSettings({ publishing: { exportOnApprove: v } })} />
+            <div>
+              <p className="text-sm font-medium">Copiar para a pasta "para postar" ao aprovar</p>
+              <p className="text-xs text-muted">Cada clipe aprovado vai para uma pasta do dia, com um .txt de título, descrição e legenda prontos.</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Onde você posta</p>
+              <p className="text-xs text-muted">O clipe sai de "Para postar" quando foi postado em todas as marcadas.</p>
+            </div>
+            <div className="flex gap-2">
+              {(['youtube', 'tiktok'] as const).map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => void updateSettings({ publishing: { networks: { [n]: !s.publishing.networks[n] } } })}
+                  className={cx(
+                    'rounded-full border px-3 py-1 text-[13px] transition',
+                    s.publishing.networks[n] ? 'border-accent/50 bg-accent/15 text-text' : 'border-white/15 text-muted hover:text-text'
+                  )}
+                >
+                  {n === 'youtube' ? 'YouTube Shorts' : 'TikTok'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Apagar os descartados do disco</p>
+              <p className="text-xs text-muted">O vídeo dos clipes em Descartados é apagado sozinho, e o lance não volta a virar clipe. Também fica no topo da aba Descartados.</p>
+            </div>
+            <select
+              value={s.clips.discardedDelete}
+              onChange={(e) => void updateSettings({ clips: { discardedDelete: e.target.value as Settings['clips']['discardedDelete'] } })}
+              className="rounded-xl border border-line bg-panel px-3 py-1.5 text-sm outline-none focus:border-accent"
+            >
+              <option value="never">Nunca</option>
+              <option value="startup">Ao abrir o app</option>
+              <option value="1d">Depois de 1 dia</option>
+              <option value="7d">Depois de 7 dias</option>
+              <option value="30d">Depois de 30 dias</option>
+            </select>
+          </div>
+        </Card>
+      </Section>
+        </>
+      )}
+
+      {tab === 'visual' && (
         <>
       <Section title="Qualidade do vídeo">
         <Card className="space-y-4">
@@ -418,7 +821,7 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
         </Card>
       </Section>
 
-      <Section title="Clipes">
+      <Section title="Layout, legenda e título">
         <Card className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -432,31 +835,36 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
             />
           </div>
           <div className="flex items-center gap-4">
-            <Toggle label="Gerar clipes sozinho" checked={s.clips.auto.enabled} onChange={(v) => void updateSettings({ clips: { auto: { enabled: v } } })} />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">Gerar sozinho os clipes dos momentos fortes</p>
+            <Toggle label="Achar a facecam sozinha" checked={s.clips.autoFacecam} onChange={(v) => void updateSettings({ clips: { autoFacecam: v } })} />
+            <div>
+              <p className="text-sm font-medium">A KaTY acha a facecam sozinha</p>
               <p className="text-xs text-muted">
-                Depois de cada detecção, os momentos com nota a partir do valor ao lado viram clipe com o layout padrão. Com a IA ligada, espera o título dela;
-                os que ela descartou ficam de fora (menos os clipados pela comunidade).
+                No "Facecam + jogo", se o canal ainda não tem facecam marcada, ela olha 3 quadros da live e acha a câmera (a que fica parada no mesmo lugar). Precisa
+                da chave do Gemini.
               </p>
             </div>
-            <NumberInput value={s.clips.auto.minScore} unit="nota" onChange={(v) => void updateSettings({ clips: { auto: { minScore: v } } })} />
           </div>
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="mb-1 text-sm font-medium">Margem antes</p>
-              <NumberInput value={s.clips.padBeforeS} unit="s" onChange={(v) => void updateSettings({ clips: { padBeforeS: v } })} />
+              <p className="text-sm font-medium">Altura da facecam</p>
+              <p className="text-xs text-muted">Quanto da tela a câmera ocupa em cima; o jogo fica com o resto. Automático segue o formato da câmera.</p>
             </div>
-            <div>
-              <p className="mb-1 text-sm font-medium">Margem depois</p>
-              <NumberInput value={s.clips.padAfterS} unit="s" onChange={(v) => void updateSettings({ clips: { padAfterS: v } })} />
-            </div>
-            <div>
-              <p className="mb-1 text-sm font-medium">Duração máxima</p>
-              <NumberInput value={s.clips.maxDurationS} unit="s" onChange={(v) => void updateSettings({ clips: { maxDurationS: v } })} />
+            <div className="flex w-72 items-center gap-2 text-xs text-muted">
+              <input
+                type="range"
+                min={20}
+                max={50}
+                value={s.clips.facecamPct || 20}
+                onChange={(e) => {
+                  const v = Number(e.target.value)
+                  void updateSettings({ clips: { facecamPct: v < 25 ? 0 : v } })
+                }}
+                className="w-full"
+                aria-label="Altura da facecam"
+              />
+              <span className="w-20 text-right tabular-nums text-text">{s.clips.facecamPct ? `${s.clips.facecamPct}%` : 'Automático'}</span>
             </div>
           </div>
-          <p className="-mt-2 text-xs text-muted">Momento mais longo que o máximo é cortado em volta do pico (mais tempo antes do que depois). Shorts aceita até 60 s.</p>
         </Card>
         <Card className="space-y-4">
           <div className="flex items-center gap-4">
@@ -512,6 +920,75 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
             <Toggle label="Maiúsculas" checked={s.clips.captions.upper} onChange={(v) => void updateSettings({ clips: { captions: { upper: v } } })} />
             <p className="text-sm font-medium">Legenda em MAIÚSCULAS</p>
           </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium">Fonte</p>
+            <select
+              value={s.clips.captions.font}
+              onChange={(e) => void updateSettings({ clips: { captions: { font: e.target.value as CaptionFont } } })}
+              style={{ fontFamily: s.clips.captions.font }}
+              className="rounded-xl border border-line bg-panel px-3 py-1.5 text-sm outline-none focus:border-accent"
+            >
+              {CAPTION_FONTS.map((f) => (
+                <option key={f} value={f} style={{ fontFamily: f }}>
+                  {f}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium">Cor das outras palavras</p>
+            <div className="flex items-center gap-2">
+              {['#ffffff', '#ffd400', '#e5e7eb', '#a7f3d0'].map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  aria-label={`Cor ${c}`}
+                  onClick={() => void updateSettings({ clips: { captions: { baseColor: c } } })}
+                  className={`size-7 rounded-full border-2 ${s.clips.captions.baseColor === c ? 'border-accent' : 'border-white/20'}`}
+                  style={{ background: c }}
+                />
+              ))}
+              <input
+                type="color"
+                value={s.clips.captions.baseColor}
+                onChange={(e) => void updateSettings({ clips: { captions: { baseColor: e.target.value } } })}
+                className="size-7 cursor-pointer rounded-full border-0 bg-transparent"
+                aria-label="Outra cor"
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium">Contorno das letras</p>
+            <Segmented
+              value={s.clips.captions.outline}
+              onChange={(v) => void updateSettings({ clips: { captions: { outline: v } } })}
+              options={[
+                { value: 'thin', label: 'Fino' },
+                { value: 'normal', label: 'Normal' },
+                { value: 'thick', label: 'Grosso' }
+              ]}
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Altura da legenda</p>
+              <p className="text-xs text-muted">Sobe ou desce a legenda a partir do lugar de cada layout.</p>
+            </div>
+            <div className="flex w-72 items-center gap-2 text-xs text-muted">
+              <span>mais alto</span>
+              <input
+                type="range"
+                min={-25}
+                max={15}
+                value={s.clips.captions.offsetPct}
+                onChange={(e) => void updateSettings({ clips: { captions: { offsetPct: Number(e.target.value) } } })}
+                className="w-full"
+                aria-label="Altura da legenda"
+              />
+              <span>mais baixo</span>
+            </div>
+          </div>
+          <CaptionPreview s={s} />
         </Card>
         <Card className="flex flex-wrap items-center gap-4">
           <Toggle label="Título na tela" checked={s.clips.title.enabled} onChange={(v) => void updateSettings({ clips: { title: { enabled: v } } })} />
@@ -527,9 +1004,37 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
               { value: 'en', label: 'Inglês' }
             ]}
           />
+          <div className="flex w-full flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Tempo do título na tela</p>
+              <p className="text-xs text-muted">Nos layouts com o jogo dividido; 0 deixa o clipe todo. Em tela inteira fica o clipe todo.</p>
+            </div>
+            <NumberInput value={s.clips.title.seconds} unit="s" onChange={(v) => void updateSettings({ clips: { title: { seconds: v } } })} />
+          </div>
+          <div className="flex w-full flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium">Caixa do título</p>
+            <div className="flex gap-2">
+              {(
+                [
+                  ['white', 'Branca', '#ffffff', '#101010'],
+                  ['black', 'Preta', '#101010', '#ffffff'],
+                  ['yellow', 'Amarela', '#ffd400', '#101010']
+                ] as const
+              ).map(([v, label, bg, fg]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => void updateSettings({ clips: { title: { style: v } } })}
+                  className={cx('rounded-md border-2 px-3 py-1 text-xs font-black', s.clips.title.style === v ? 'border-accent' : 'border-white/15')}
+                  style={{ background: bg, color: fg }}
+                >
+                  {label.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
         </Card>
       </Section>
-
         </>
       )}
 
@@ -665,6 +1170,24 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
             effective={disk?.clipsDir}
             onPick={(p) => void updateSettings({ storage: { clipsDir: p } }).then(refreshDisk)}
           />
+          <FolderRow
+            label="Pasta para postar"
+            hint="Cópias dos clipes aprovados, numa pasta por dia, com um .txt de título e descrição do YouTube e legenda do TikTok."
+            value={s.storage.exportDir}
+            effective={disk?.exportDir}
+            onPick={(p) => void updateSettings({ storage: { exportDir: p } }).then(refreshDisk)}
+          />
+          <div className="flex items-center gap-4">
+            <Toggle
+              label="Copiar ao aprovar"
+              checked={s.publishing.exportOnApprove}
+              onChange={(v) => void updateSettings({ publishing: { exportOnApprove: v } })}
+            />
+            <div>
+              <p className="text-sm font-medium">Copiar para a pasta para postar ao aprovar</p>
+              <p className="text-xs text-muted">Voltar o clipe para revisão ou descartar tira a cópia (menos se já foi marcado como postado).</p>
+            </div>
+          </div>
         </Card>
         <Card className="space-y-4">
           <div className="space-y-2">
@@ -717,12 +1240,17 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <Toggle label="Apagar segmentos sem clipe" checked={false} disabled onChange={() => undefined} />
+            <Toggle
+              label="Apagar pedaços que não viraram clipe"
+              checked={s.storage.deleteUnusedSegments}
+              onChange={(v) => void updateSettings({ storage: { deleteUnusedSegments: v } })}
+            />
             <div>
-              <p className="flex items-center gap-2 text-sm font-medium">
-                Apagar pedaços já processados que não viraram clipe <Badge tone="muted">em breve</Badge>
+              <p className="text-sm font-medium">Apagar pedaços que não viraram clipe</p>
+              <p className="text-xs text-muted">
+                30 min depois que a live acaba, guarda só os trechos dos clipes e dos momentos e apaga o resto da gravação. Clipes em
+                Descartados não seguram nada. Depois não dá para reanalisar a live inteira.
               </p>
-              <p className="text-xs text-muted">Economiza disco, mas impede reprocessar a live inteira depois. Por enquanto, use o limite de espaço acima.</p>
             </div>
           </div>
         </Card>

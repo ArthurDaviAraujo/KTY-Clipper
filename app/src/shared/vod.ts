@@ -11,9 +11,13 @@ export interface VodRef {
  * Reconhece links de VOD:
  * - Twitch: twitch.tv/videos/123 (com ou sem ?t=)
  * - Kick: kick.com/<canal>/videos/<uuid> ou kick.com/video/<uuid>
+ * - YouTube: youtube.com/watch?v=<id>, youtu.be/<id>, youtube.com/live/<id> (lives que já acabaram e vídeos)
  */
 export function parseVodInput(input: string): VodRef | null {
   const s = input.trim()
+  const yt =
+    s.match(/(?:^|\/\/|\.)youtube\.com\/(?:watch\?(?:[^#\s]*&)?v=|live\/|shorts\/|embed\/)([\w-]{11})(?![\w-])/i) ?? s.match(/(?:^|\/\/)(?:www\.)?youtu\.be\/([\w-]{11})(?![\w-])/i)
+  if (yt) return { platform: 'youtube', id: yt[1] }
   const tw = s.match(/(?:^|\/\/|\.)twitch\.tv\/videos\/(\d+)/i) ?? s.match(/^v?(\d{6,})$/)
   if (tw) return { platform: 'twitch', id: tw[1] }
   const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'

@@ -40,3 +40,23 @@ describe('sanitizeSettings', () => {
     expect(c.storage.warnFreeGb).toBe(50)
   })
 })
+
+describe('durações dos cortes (análise dos cortes que viralizam)', () => {
+  it('quem ainda tinha o padrão antigo (20–45 s em jogo) passa para o novo; quem mexeu fica como está', () => {
+    const s = defaultSettings()
+    s.modalities.presets.game = { ...s.modalities.presets.game, minDurationS: 20, maxDurationS: 45, padBeforeS: 2, padAfterS: 2 }
+    s.modalities.presets.talk = { ...s.modalities.presets.talk, minDurationS: 30, maxDurationS: 50 }
+    const out = sanitizeSettings(s)
+    expect(out.modalities.presets.game).toMatchObject({ minDurationS: 30, maxDurationS: 110, padBeforeS: 4 })
+    expect(out.modalities.presets.talk).toMatchObject({ minDurationS: 30, maxDurationS: 50 })
+  })
+})
+
+describe('modelo das reservas da KaTY', () => {
+  it('guarda o modelo escolhido de cada reserva (antes era descartado)', () => {
+    const s = mergeSettings(defaultSettings(), { ai: { backupModels: { groq: 'openai/gpt-oss-120b' } } })
+    expect(s.ai.backupModels.groq).toBe('openai/gpt-oss-120b')
+    const t = mergeSettings(s, { ai: { backupModels: { openrouter: 'google/gemma-4-31b-it:free' } } })
+    expect(t.ai.backupModels).toEqual({ groq: 'openai/gpt-oss-120b', openrouter: 'google/gemma-4-31b-it:free' })
+  })
+})

@@ -29,8 +29,6 @@ export default function ActivityMenu({ state }: { state: AppState }) {
   })
   const ref = useRef<HTMLDivElement>(null)
   const active = state.jobs.filter((j) => j.status === 'running' || j.status === 'queued')
-  const failed = state.jobs.filter((j) => j.status === 'failed' && j.finishedAt && j.finishedAt > Date.now() - 24 * 3600_000)
-  const notices = useMemo(() => tidy(state.logs), [state.logs])
   const unread = state.logs.some((l) => l.time > seen && l.level !== 'info')
 
   useEffect(() => {
@@ -76,57 +74,67 @@ export default function ActivityMenu({ state }: { state: AppState }) {
 
       {open && (
         <div className="absolute right-0 top-11 z-40 flex max-h-[75vh] w-[420px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-2/95 shadow-2xl backdrop-blur-xl">
-          <div className="space-y-2 overflow-y-auto p-3">
-            <p className="px-1 text-xs font-semibold uppercase tracking-wide text-muted">Em andamento</p>
-            {active.length === 0 && <p className="px-1 pb-1 text-sm text-muted">Nada rodando agora.</p>}
-            {active.map((j) => (
-              <div key={j.id} className="rounded-xl bg-card/60 p-3">
-                <div className="mb-2 flex items-center gap-2 text-sm">
-                  <Loader2 size={14} className={j.status === 'running' ? 'animate-spin text-accent-2' : 'text-muted'} />
-                  <span className="min-w-0 flex-1 truncate">{j.label}</span>
-                  <span className="text-xs tabular-nums text-muted">{j.status === 'running' ? `${Math.round(j.progress * 100)}%` : 'na fila'}</span>
-                  <button type="button" title="Cancelar" onClick={() => void window.api.cancelJob(j.id)} className="text-muted hover:text-err">
-                    <X size={14} />
-                  </button>
-                </div>
-                <Progress value={j.status === 'running' ? j.progress : 0} />
-              </div>
-            ))}
-            {failed.map((j) => (
-              <div key={j.id} className="flex items-start gap-2 rounded-xl bg-err/10 p-3 text-sm">
-                <XCircle size={14} className="mt-0.5 shrink-0 text-err" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate">{j.label}</p>
-                  <p className="line-clamp-2 text-xs text-err">{j.error}</p>
-                </div>
-                <button type="button" title="Tentar de novo" onClick={() => void window.api.retryJob(j.id)} className="text-muted hover:text-accent-2">
-                  <RotateCcw size={14} />
-                </button>
-              </div>
-            ))}
-
-            <p className="px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-muted">Avisos</p>
-            {notices.length === 0 && <p className="px-1 text-sm text-muted">Sem avisos.</p>}
-            {notices.map((l) => (
-              <div key={l.id} className="flex gap-2 rounded-xl px-2 py-1.5 text-xs hover:bg-card/40">
-                {l.level === 'error' ? (
-                  <XCircle size={14} className="mt-0.5 shrink-0 text-err" />
-                ) : l.level === 'warn' ? (
-                  <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warn" />
-                ) : /pronto|conclu|funcionam/i.test(l.message) ? (
-                  <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-ok" />
-                ) : (
-                  <Info size={14} className="mt-0.5 shrink-0 text-muted" />
-                )}
-                <div className="min-w-0">
-                  <p className="break-words text-text/90">{l.message}</p>
-                  <p className="text-[10px] text-muted">{timeAgo(l.time)}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+          <ActivityList state={state} className="overflow-y-auto p-3" />
         </div>
       )}
+    </div>
+  )
+}
+
+/** Tarefas em andamento, falhas e avisos recentes (no menu do sino e na barra lateral). */
+export function ActivityList({ state, className }: { state: AppState; className?: string }) {
+  const active = state.jobs.filter((j) => j.status === 'running' || j.status === 'queued')
+  const failed = state.jobs.filter((j) => j.status === 'failed' && j.finishedAt && j.finishedAt > Date.now() - 24 * 3600_000)
+  const notices = useMemo(() => tidy(state.logs), [state.logs])
+  return (
+    <div className={cx('space-y-2', className)}>
+      <p className="px-1 text-xs font-semibold uppercase tracking-wide text-muted">Em andamento</p>
+      {active.length === 0 && <p className="px-1 pb-1 text-sm text-muted">Nada rodando agora.</p>}
+      {active.map((j) => (
+        <div key={j.id} className="rounded-xl bg-card/60 p-3">
+          <div className="mb-2 flex items-center gap-2 text-sm">
+            <Loader2 size={14} className={j.status === 'running' ? 'animate-spin text-accent-2' : 'text-muted'} />
+            <span className="min-w-0 flex-1 truncate">{j.label}</span>
+            <span className="text-xs tabular-nums text-muted">{j.status === 'running' ? `${Math.round(j.progress * 100)}%` : 'na fila'}</span>
+            <button type="button" title="Cancelar" onClick={() => void window.api.cancelJob(j.id)} className="text-muted hover:text-err">
+              <X size={14} />
+            </button>
+          </div>
+          <Progress value={j.status === 'running' ? j.progress : 0} />
+        </div>
+      ))}
+      {failed.map((j) => (
+        <div key={j.id} className="flex items-start gap-2 rounded-xl bg-err/10 p-3 text-sm">
+          <XCircle size={14} className="mt-0.5 shrink-0 text-err" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate">{j.label}</p>
+            <p className="line-clamp-2 text-xs text-err">{j.error}</p>
+          </div>
+          <button type="button" title="Tentar de novo" onClick={() => void window.api.retryJob(j.id)} className="text-muted hover:text-accent-2">
+            <RotateCcw size={14} />
+          </button>
+        </div>
+      ))}
+
+      <p className="px-1 pt-2 text-xs font-semibold uppercase tracking-wide text-muted">Avisos</p>
+      {notices.length === 0 && <p className="px-1 text-sm text-muted">Sem avisos.</p>}
+      {notices.map((l) => (
+        <div key={l.id} className="flex gap-2 rounded-xl px-2 py-1.5 text-xs hover:bg-card/40">
+          {l.level === 'error' ? (
+            <XCircle size={14} className="mt-0.5 shrink-0 text-err" />
+          ) : l.level === 'warn' ? (
+            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warn" />
+          ) : /pronto|conclu|funcionam/i.test(l.message) ? (
+            <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-ok" />
+          ) : (
+            <Info size={14} className="mt-0.5 shrink-0 text-muted" />
+          )}
+          <div className="min-w-0">
+            <p className="break-words text-text/90">{l.message}</p>
+            <p className="text-[10px] text-muted">{timeAgo(l.time)}</p>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

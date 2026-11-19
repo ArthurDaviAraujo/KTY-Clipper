@@ -1,4 +1,37 @@
 import type { Db } from './db'
+import { modalityOf, type Modality } from '../shared/modality'
+
+const MODALITY_IDS: Modality[] = ['game', 'talk', 'irl', 'sports', 'creative']
+
+/** Modalidade fixada no canal da live (null = automática pela categoria). */
+export function channelModality(db: Db, liveId: number): Modality | null {
+  const r = db.prepare('SELECT c.modality FROM lives l JOIN channels c ON c.id = l.channel_id WHERE l.id = ?').get(liveId) as
+    | { modality: string | null }
+    | undefined
+  return MODALITY_IDS.includes(r?.modality as Modality) ? (r!.modality as Modality) : null
+}
+
+/** Modalidade no instante `utc`: a fixada no canal ou a da categoria daquele momento. */
+export function modalityAt(db: Db, liveId: number, utc: number): Modality | null {
+  return channelModality(db, liveId) ?? modalityOf(gameAt(db, liveId, utc))
+}
+
+/** Função rápida "instante → modalidade" para a live inteira (a detecção consulta cada lance). */
+export function modalityTimeline(db: Db, liveId: number): (utc: number) => Modality | null {
+  const fixed = channelModality(db, liveId)
+  if (fixed) return () => fixed
+  const marks = gamesOf(db, liveId)
+  const fallback = modalityOf((db.prepare('SELECT game FROM lives WHERE id = ?').get(liveId) as { game: string | null } | undefined)?.game ?? null)
+  if (!marks.length) return () => fallback
+  return (utc) => {
+    let g = marks[0].game
+    for (const m of marks) {
+      if (m.fromUtc > utc) break
+      g = m.game
+    }
+    return modalityOf(g)
+  }
+}
 
 /**
  * Categoria (jogo) ao longo de uma live. O streamer pode abrir em Just Chatting e entrar num jogo depois;

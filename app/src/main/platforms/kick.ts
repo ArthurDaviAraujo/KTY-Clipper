@@ -264,3 +264,21 @@ export async function kickStatus(slug: string, signal?: AbortSignal): Promise<Ki
       : null
   }
 }
+
+/** Busca de canais do site da Kick. */
+export async function kickSearch(text: string, signal?: AbortSignal): Promise<import('../../shared/types').ChannelHit[]> {
+  const r = await httpFetch(`https://kick.com/api/search?searched_word=${encodeURIComponent(text)}`, { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal })
+  if (!r.ok) throw new Error(`Kick respondeu ${r.status}`)
+  const j = (await r.json()) as {
+    channels?: { slug: string; followers_count?: number; followersCount?: number; isLive?: boolean; is_live?: boolean; user?: { username?: string; bio?: string | null; profilePic?: string | null; profile_pic?: string | null } }[]
+  }
+  return (j.channels ?? []).slice(0, 8).map((c) => ({
+    platform: 'kick' as const,
+    login: c.slug.toLowerCase(),
+    displayName: c.user?.username ?? c.slug,
+    avatarUrl: c.user?.profilePic ?? c.user?.profile_pic ?? null,
+    followers: c.followers_count ?? c.followersCount ?? null,
+    live: !!(c.isLive ?? c.is_live),
+    description: (c.user?.bio ?? '').slice(0, 200)
+  }))
+}
