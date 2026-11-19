@@ -96,3 +96,41 @@ describe('ajustes novos do recorte', () => {
     expect(out.clips.cutSilences).toBe('talk')
   })
 })
+
+describe('legenda no idioma do streamer', () => {
+  it('o idioma que domina os pedaços da live é o do streamer (vozes do jogo em inglês não mandam)', async () => {
+    const { decideStreamerLang } = await import('../src/shared/lang')
+    // live do tonyboy em 2026-11-18: 7 pedaços em pt, 3 em en (vozes do GTA)
+    expect(decideStreamerLang(['pt', 'pt', 'en', 'pt', 'pt', 'en', 'pt', 'pt', 'en', 'pt'], null)).toBe('pt')
+    // poucos pedaços ou empate, sem dica: ainda não sabe
+    expect(decideStreamerLang(['pt', 'en'], null)).toBeNull()
+    expect(decideStreamerLang(['pt', 'en', 'pt', 'en'], null)).toBeNull()
+    // streamer que fala inglês
+    expect(decideStreamerLang(['en', 'en', 'en', 'pt'], null)).toBe('en')
+    // ignora vazios e lixo
+    expect(decideStreamerLang([null, 'pt', undefined, 'pt', 'xx-yy', 'pt'], null)).toBe('pt')
+  })
+  it('a dica da plataforma (ou das lives anteriores) decide mais cedo, mas não contra a fala', async () => {
+    const { decideStreamerLang } = await import('../src/shared/lang')
+    expect(decideStreamerLang(['pt', 'en'], 'pt')).toBe('pt')
+    // Live inteira em inglês de um streamer brasileiro: a fala manda
+    expect(decideStreamerLang(['en', 'en', 'en'], 'pt')).toBe('en')
+    expect(decideStreamerLang(['en', 'en'], 'pt')).toBeNull()
+  })
+  it('ordem: escolhido no canal > fixado nas Configurações > decidido na live > automático', async () => {
+    const { speechLangFor } = await import('../src/shared/lang')
+    expect(speechLangFor({ channelChoice: 'en', global: 'pt', live: 'pt' })).toBe('en')
+    expect(speechLangFor({ channelChoice: null, global: 'es', live: 'pt' })).toBe('es')
+    expect(speechLangFor({ channelChoice: null, global: 'auto', live: 'pt' })).toBe('pt')
+    expect(speechLangFor({ channelChoice: null, global: 'auto', live: null })).toBe('auto')
+  })
+  it('lê o idioma que a Twitch e a Kick informam', async () => {
+    const { langCode } = await import('../src/shared/lang')
+    expect(langCode('PT')).toBe('pt') // Twitch
+    expect(langCode('pt')).toBe('pt') // Kick lang_iso
+    expect(langCode('Portuguese')).toBe('pt') // Kick language
+    expect(langCode('pt-BR')).toBe('pt')
+    expect(langCode('')).toBeNull()
+    expect(langCode('Klingon')).toBeNull()
+  })
+})

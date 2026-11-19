@@ -58,7 +58,7 @@ export function defaultSettings(): Settings {
       voiceTriggers: ['clipa isso', 'clipa ai', 'clipa essa', 'clipa', 'manda pro clipe', 'vai pro clipe', 'clip that', 'clip it', 'clip this']
     },
     speech: { model: '', language: 'auto', threads: 0 },
-    ai: { provider: 'gemini', fallbackToLocal: true, geminiModel: '', backupModels: {} },
+    ai: { provider: 'gemini', fallbackToLocal: true, geminiModel: '', backupModels: {}, videoReview: true, videoPerRun: 4 },
     quality: { preset: 'balanced', encoder: '' },
     clips: {
       layout: 'split',
@@ -171,6 +171,8 @@ export function sanitizeSettings(s: Settings): Settings {
     ? [...new Set(out.detection.voiceTriggers.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter(Boolean))].slice(0, 40)
     : defaultSettings().detection.voiceTriggers
   out.speech.threads = clamp(out.speech.threads, 0, 64, 0)
+  out.ai.videoPerRun = clamp(out.ai.videoPerRun, 0, 12, 4)
+  out.ai.videoReview = out.ai.videoReview !== false
   if (typeof out.speech.language !== 'string' || !/^(auto|[a-z]{2})$/.test(out.speech.language)) out.speech.language = 'auto'
   out.storage.maxRecordingsGb = Number.isFinite(out.storage.maxRecordingsGb) ? Math.max(0, Math.round(out.storage.maxRecordingsGb)) : 0
   if (!['deleteOldest', 'stopRecording'].includes(out.storage.whenFull)) out.storage.whenFull = 'deleteOldest'

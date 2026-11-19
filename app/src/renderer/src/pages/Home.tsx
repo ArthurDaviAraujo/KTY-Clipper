@@ -7,6 +7,7 @@ import {
   Clapperboard,
   Cpu,
   Download,
+  Eye,
   FolderOpen,
   Inbox,
   Info,
@@ -386,11 +387,18 @@ function LiveClipping({ state, go }: { state: AppState; go: Go }) {
 
       <div className="relative p-6">
         {recording.length === 0 ? (
-          <div className="flex flex-wrap items-center gap-4 rounded-xl border border-dashed border-white/[0.1] px-5 py-6">
-            <Scissors size={18} className="shrink-0 text-muted" />
-            <p className="min-w-0 flex-1 text-[13px] text-muted">
-              Ninguém gravando agora. Quando um canal com “Gravar” ligado entrar ao vivo, ele aparece aqui com os clipes saindo na hora e o botão “Clipar agora”.
-            </p>
+          <div className="flex flex-wrap items-center gap-4 rounded-xl border border-white/[0.07] bg-white/[0.02] px-5 py-4">
+            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-white/[0.05] text-muted">
+              <Scissors size={17} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[14px] font-medium">Ninguém gravando agora</p>
+              <p className="text-[12.5px] text-muted">
+                {watching.length
+                  ? 'Escolha abaixo quem gravar: os clipes começam a sair aqui poucos minutos depois de cada lance.'
+                  : 'Quando um canal com “Gravar” ligado entrar ao vivo, ele aparece aqui com os clipes saindo na hora.'}
+              </p>
+            </div>
             <Button variant="ghost" onClick={() => go('channels', { channels: 'all' })}>
               <Plus size={14} /> Canais
             </Button>
@@ -411,24 +419,43 @@ function LiveClipping({ state, go }: { state: AppState; go: Go }) {
 /** Canais ao vivo que estão só sendo vigiados: uma linha com "Começar a gravar". */
 function WatchingOnly({ channels }: { channels: ChannelState[] }) {
   return (
-    <div className="mt-6 space-y-2">
-      <p className="text-[12px] text-muted">Ao vivo, só vigiando (sem gravar)</p>
-      <div className="grid gap-2 lg:grid-cols-2 2xl:grid-cols-3">
-        {channels.map((c) => (
-          <div key={c.id} className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
-            <Avatar channel={c} size={30} />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-[13px] font-medium">{c.displayName}</p>
-              <p className="truncate text-[11px] text-muted">
-                {c.live?.game ?? 'Sem categoria'}
-                {c.live?.viewers ? ` · ${c.live.viewers.toLocaleString('pt-BR')} assistindo` : ''}
-              </p>
+    <div className="mt-6 space-y-3">
+      <p className="flex items-center gap-2 text-[12.5px] text-muted">
+        <span className="size-1.5 animate-pulse rounded-full bg-live" />
+        Ao vivo agora, só vigiando
+        <span className="rounded-full bg-white/[0.06] px-1.5 text-[11px] tabular-nums text-text/80">{channels.length}</span>
+        <span className="text-muted/70">· ainda sem gravar</span>
+      </p>
+      <div className="grid gap-2.5 lg:grid-cols-2 2xl:grid-cols-3">
+        {[...channels]
+          .sort((a, b) => (b.live?.viewers ?? 0) - (a.live?.viewers ?? 0))
+          .map((c) => (
+            <div key={c.id} className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.025] px-3 py-2.5 transition hover:border-white/[0.13]">
+              <Avatar channel={c} size={34} />
+              <div className="min-w-0 flex-1">
+                <p className="flex items-center gap-1.5 truncate text-[13.5px] font-medium">
+                  {c.displayName}
+                  <span className="shrink-0 rounded bg-live/15 px-1 text-[9.5px] font-bold uppercase tracking-wide text-live">ao vivo</span>
+                </p>
+                <p className="flex items-center gap-1 truncate text-[11.5px] text-muted">
+                  <span className="truncate">{c.live?.game ?? 'Sem categoria'}</span>
+                  {c.live?.viewers ? (
+                    <span className="flex shrink-0 items-center gap-1">
+                      · <Eye size={11} /> {c.live.viewers.toLocaleString('pt-BR')}
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void window.api.setChannelRecord(c.id, true)}
+                title="Começa a gravar esta live agora (e as próximas deste canal); os clipes saem sozinhos"
+                className="flex shrink-0 items-center gap-1.5 rounded-full border border-live/30 bg-live/10 px-3 py-1 text-[12px] font-medium text-live transition hover:bg-live/20"
+              >
+                <span className="size-2 rounded-full bg-live" /> Gravar
+              </button>
             </div>
-            <Button variant="ghost" onClick={() => void window.api.setChannelRecord(c.id, true)} title="Começa a gravar esta live agora e deixa o canal gravando nas próximas">
-              <span className="size-2 rounded-full bg-live" /> Começar a gravar
-            </Button>
-          </div>
-        ))}
+          ))}
       </div>
     </div>
   )

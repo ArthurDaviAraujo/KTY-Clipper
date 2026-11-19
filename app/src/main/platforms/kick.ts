@@ -1,4 +1,5 @@
 import type { LiveInfo, RecordQuality } from '../../shared/types'
+import { langCode } from '../../shared/lang'
 import { httpFetch } from './http'
 
 export interface HlsVariant {
@@ -235,6 +236,9 @@ interface KickApi {
     viewer_count: number
     is_live: boolean
     categories?: { name: string }[]
+    /** "pt", "en"… e o nome ("Portuguese") */
+    lang_iso?: string | null
+    language?: string | null
   } | null
 }
 
@@ -259,7 +263,8 @@ export async function kickStatus(slug: string, signal?: AbortSignal): Promise<Ki
           game: ls.categories?.[0]?.name ?? null,
           viewers: ls.viewer_count,
           startedAt: parseKickDate(ls.created_at),
-          isRerun: false
+          isRerun: false,
+          language: langCode(ls.lang_iso) ?? langCode(ls.language)
         }
       : null
   }

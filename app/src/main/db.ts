@@ -260,6 +260,12 @@ const MIGRATIONS: string[] = [
   // 18 — quando o clipe foi aprovado ou descartado (para apagar os descartados depois de um prazo)
   `
   ALTER TABLE clips ADD COLUMN reviewed_at INTEGER;
+  `,
+  // 19 — idioma da legenda: o informado pela plataforma e o decidido em cada live; e a escolha à mão por canal
+  `
+  ALTER TABLE lives ADD COLUMN platform_lang TEXT;
+  ALTER TABLE lives ADD COLUMN speech_lang TEXT;
+  ALTER TABLE channels ADD COLUMN speech_lang TEXT;
   `
 ]
 

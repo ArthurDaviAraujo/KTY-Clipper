@@ -39,6 +39,7 @@ const api: Api = {
   searchChannels: (text) => ipcRenderer.invoke('channels:search', text),
   setChannelRecord: (id, record) => ipcRenderer.invoke('channels:setRecord', id, record),
   setChannelModality: (id, modality) => ipcRenderer.invoke('channels:setModality', id, modality),
+  setChannelSpeechLang: (id, lang) => ipcRenderer.invoke('channels:setSpeechLang', id, lang),
   assistantState: () => ipcRenderer.invoke('assistant:state'),
   assistantSend: (text) => ipcRenderer.invoke('assistant:send', text),
   assistantConfirm: (id, ok) => ipcRenderer.invoke('assistant:confirm', id, ok),

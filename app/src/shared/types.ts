@@ -163,6 +163,8 @@ export interface LiveInfo {
   viewers: number
   startedAt: number
   isRerun: boolean
+  /** Idioma da transmissão informado pela plataforma ("pt", "en"…), quando ela informa */
+  language?: string | null
 }
 
 export interface RecordingInfo {
@@ -233,6 +235,10 @@ export interface ChannelState {
   lastError: string | null
   /** Modalidade fixada para o canal; null = automática pela categoria da live */
   modality: Modality | null
+  /** Idioma da legenda escolhido à mão ("pt", "en"…); null = automático (aprende em cada live) */
+  speechLang: string | null
+  /** Idioma que o app aprendeu nas lives do canal (ou que a plataforma informou) */
+  learnedLang: string | null
 }
 
 export interface Settings {
@@ -266,6 +272,10 @@ export interface Settings {
     geminiModel: string
     /** Modelo escolhido para cada reserva (Groq, OpenRouter, Mistral, IA local) ao testar a chave */
     backupModels: Partial<Record<'groq' | 'openrouter' | 'mistral' | 'ollama', string>>
+    /** A KaTY vê o vídeo dos lances mais fortes (segunda olhada; só no Gemini, gasta mais cota) */
+    videoReview: boolean
+    /** Quantos lances ela vê em vídeo por rodada de análise */
+    videoPerRun: number
   }
   quality: {
     preset: QualityPreset
@@ -587,6 +597,9 @@ export interface MomentRecord {
     analysis?: string | null
     /** Nota por partes: gancho 30, desfecho 30, emoção 20, compartilhável 20 */
     parts?: { gancho: number; desfecho: number; emocao: number; compartilhavel: number } | null
+    /** A KaTY viu o vídeo do trecho: o que apareceu na tela, e se há spoiler da história do jogo */
+    seen?: string | null
+    spoiler?: boolean
   } | null
   hasThumb: boolean
   status: string
@@ -686,6 +699,8 @@ export interface Api {
   onNavigate(cb: (to: { page: string; [k: string]: unknown }) => void): () => void
   /** Fixa a modalidade do canal (null = automática pela categoria) */
   setChannelModality(id: number, modality: Modality | null): Promise<void>
+  /** Idioma da legenda do canal ("pt", "en"…; null = automático) */
+  setChannelSpeechLang(id: number, lang: string | null): Promise<void>
   checkChannelsNow(): Promise<void>
   stopRecording(channelId: number): Promise<void>
   onChannels(cb: (channels: ChannelState[]) => void): () => void

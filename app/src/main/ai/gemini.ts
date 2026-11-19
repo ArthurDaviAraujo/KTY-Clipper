@@ -153,23 +153,51 @@ export async function geminiTurn(
   }
 }
 
+/** Mídia mandada junto do pedido: JPEG em base64 (string) ou outro tipo, como vídeo MP4 */
+export type GeminiMedia = string | { mimeType: string; data: string }
+
+/** Modelos/contas que recusaram a resolução baixa de mídia (não manda de novo) */
+const noMediaRes = new Set<string>()
+
 /**
- * Pedido em JSON com imagens (JPEG em base64): o Gemini enxerga os quadros. Usado para achar a facecam.
+ * Pedido em JSON com imagens ou vídeo (base64): o Gemini enxerga os quadros (e ouve o som do vídeo).
+ * Usado para achar a facecam e para a KaTY ver o lance. `lowRes` pede a resolução baixa de mídia (bem menos cota).
  * Erro passageiro tenta de novo e depois outros modelos, como no `geminiJson`.
  */
-export async function geminiVisionJson<T>(key: string, model: string, system: string, text: string, imagesJpegB64: string[], schema: object, signal?: AbortSignal): Promise<T> {
+export async function geminiVisionJson<T>(
+  key: string,
+  model: string,
+  system: string,
+  text: string,
+  media: GeminiMedia[],
+  schema: object,
+  signal?: AbortSignal,
+  opts: { lowRes?: boolean; temperature?: number } = {}
+): Promise<T> {
+  const parts = media.map((m) => ({ inlineData: typeof m === 'string' ? { mimeType: 'image/jpeg', data: m } : m }))
   const once = async (m: string): Promise<T> => {
+    const low = !!opts.lowRes && !noMediaRes.has(m)
     const r = await httpFetch(`${API}/models/${m}:generateContent`, {
       method: 'POST',
       headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: 'user', parts: [...imagesJpegB64.map((data) => ({ inlineData: { mimeType: 'image/jpeg', data } })), { text }] }],
-        generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0.1 }
+        contents: [{ role: 'user', parts: [...parts, { text }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+          temperature: opts.temperature ?? 0.1,
+          ...(low ? { mediaResolution: 'MEDIA_RESOLUTION_LOW' } : {})
+        }
       }),
       signal
     })
     const j = (await r.json()) as { candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[]; error?: { message: string } }
+    // Modelo que não aceita a resolução baixa: lembra e pede de novo sem ela
+    if (r.status === 400 && low && /media.?resolution/i.test(j.error?.message ?? '')) {
+      noMediaRes.add(m)
+      return once(m)
+    }
     if (r.status === 429) throw new QuotaError(j.error?.message ?? 'Cota do Gemini esgotada.')
     if (r.status >= 500) throw new TransientError(`Gemini respondeu ${r.status}: ${j.error?.message ?? ''}`)
     if (!r.ok) throw new Error(`Gemini respondeu ${r.status}: ${j.error?.message ?? ''}`)

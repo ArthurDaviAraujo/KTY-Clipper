@@ -206,7 +206,6 @@ export default function App() {
                 icon={Home}
                 tone="home"
                 title="Início"
-                sub={`${onAir.length} ao vivo · ${toReview} para revisar`}
               />
               <Group label="Telas">
                 <SideItem icon={LayoutGrid} label="Visão geral" active={homeView === 'overview'} onClick={() => setHomeView('overview')} />
@@ -237,7 +236,7 @@ export default function App() {
 
           {page === 'clips' && (
             <>
-              <SideHeader icon={Clapperboard} tone="clips" title="Clipes" sub={`Revisar ${toReview} · Postar ${toPost}`} />
+              <SideHeader icon={Clapperboard} tone="clips" title="Clipes" />
               <Group label="Revisão">
                 <SideItem icon={Inbox} label="Para revisar" badge={count('pending')} active={clipsTab === 'review'} onClick={() => setClipsTab('review')} />
                 <SideItem icon={Check} label="Aprovados" count={count('approved')} active={clipsTab === 'approved'} onClick={() => setClipsTab('approved')} />
@@ -274,7 +273,6 @@ export default function App() {
                 icon={Radio}
                 tone="channels"
                 title="Canais"
-                sub={`${groupChannels(channels).length} streamer${groupChannels(channels).length === 1 ? '' : 's'} · ${onAir.length} ao vivo`}
               />
               <Group label="Ver">
                 <SideItem icon={Radio} label="Todos os canais" count={channels.length} active={channelsView === 'all'} onClick={() => setChannelsView('all')} />
@@ -312,7 +310,7 @@ export default function App() {
 
           {page === 'settings' && (
             <>
-              <SideHeader icon={Scissors} tone="settings" title="Ajustes" sub="O que muda os clipes" />
+              <SideHeader icon={Scissors} tone="settings" title="Ajustes" />
               <Group label="Seções">
                 {(
                   [
@@ -333,7 +331,7 @@ export default function App() {
 
           {page === 'config' && (
             <>
-              <SideHeader icon={GearStar as unknown as typeof Home} tone="config" title="Configurações" sub="IA, gravação e disco" />
+              <SideHeader icon={GearStar as unknown as typeof Home} tone="config" title="Configurações" />
               <Group label="Seções">
                 {(
                   [
@@ -411,20 +409,15 @@ const TONES = {
   config: { icon: 'from-gold to-warn shadow-gold/20', card: 'from-gold/[0.10]' }
 } as const
 
-/** Cartão do topo da lateral: ícone da seção, nome e um resumo de uma linha (o mesmo estilo do cartão da KaTY) */
-function SideHeader({ icon: Icon, title, sub, tone }: { icon: typeof Home; title: string; sub: string; tone: keyof typeof TONES }) {
+/** Cartão do topo da lateral: ícone da seção e o nome (no mesmo estilo do cartão da KaTY, mais compacto) */
+function SideHeader({ icon: Icon, title, tone }: { icon: typeof Home; title: string; tone: keyof typeof TONES }) {
   const t = TONES[tone]
   return (
-    <div className={cx('flex items-center gap-2.5 rounded-2xl border border-white/[0.08] bg-gradient-to-br via-white/[0.03] to-transparent p-3', t.card)}>
-      <span className={cx('grid size-9 shrink-0 place-items-center rounded-full bg-gradient-to-br text-white shadow-md', t.icon)}>
-        <Icon size={16} />
+    <div className={cx('flex items-center gap-2 rounded-xl border border-white/[0.07] bg-gradient-to-br via-white/[0.02] to-transparent px-2.5 py-2', t.card)}>
+      <span className={cx('grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br text-white shadow-sm', t.icon)}>
+        <Icon size={13} />
       </span>
-      <div className="min-w-0">
-        <p className="font-display text-[15px] font-semibold leading-tight">{title}</p>
-        <p className="truncate text-[11.5px] text-muted" title={sub}>
-          {sub}
-        </p>
-      </div>
+      <p className="min-w-0 truncate font-display text-[13.5px] font-semibold">{title}</p>
     </div>
   )
 }

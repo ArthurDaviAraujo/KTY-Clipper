@@ -49,6 +49,11 @@ const dataDir = process.env.CLIPADOR_DADOS
     : join(dirname(app.getAppPath()), 'dados')
 mkdirSync(dataDir, { recursive: true })
 const dbPath = join(dataDir, 'clipador.db')
+/**
+ * Id do app no Windows (barra de tarefas e avisos). O instalado usa o do instalador; em desenvolvimento, um id próprio:
+ * o Windows tinha guardado o átomo do Electron no cache para o id antigo e não trocava pelo ícone do atalho (2026-11-19).
+ */
+const APP_ID = app.isPackaged ? 'dev.clipador.kty' : 'dev.clipador.kty.desenvolvimento'
 
 let db: Db
 let logger: Logger
@@ -524,6 +529,7 @@ function registerIpc(): void {
   ipcMain.handle('channels:setEnabled', (_e, id: number, enabled: boolean) => live.setEnabled(id, enabled))
   ipcMain.handle('channels:setRecord', (_e, id: number, record: boolean) => live.setRecord(Number(id), !!record))
   ipcMain.handle('channels:setModality', (_e, id: number, modality: string | null) => live.setModality(id, modality as Modality | null))
+  ipcMain.handle('channels:setSpeechLang', (_e, id: number, lang: string | null) => live.setSpeechLang(id, lang))
   ipcMain.handle('channels:checkNow', () => live.checkNow())
   ipcMain.handle('channels:stopRecording', (_e, id: number) => live.stopRecording(id, 'ended'))
   ipcMain.handle('lives:list', (_e, limit?: number) => vod.list(limit))
@@ -709,6 +715,30 @@ function registerIpc(): void {
   })
 }
 
+/**
+ * Só em desenvolvimento: o Windows pega o ícone da barra de tarefas de um atalho do Menu Iniciar com o mesmo id do app
+ * (o instalador cria um; rodando pelo .bat não havia, e aparecia o átomo do Electron). Cria ou atualiza
+ * "Clipador KTY (desenvolvimento)" no Menu Iniciar do usuário, com a logo, abrindo o .bat de desenvolvimento.
+ */
+function ensureDevShortcut(ico: string, bat: string): void {
+  if (app.isPackaged || !existsSync(bat)) return
+  try {
+    const lnk = join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Clipador KTY (desenvolvimento).lnk')
+    const ok = shell.writeShortcutLink(lnk, existsSync(lnk) ? 'replace' : 'create', {
+      target: process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe',
+      args: `/c "${bat}"`,
+      cwd: dirname(bat),
+      icon: ico,
+      iconIndex: 0,
+      appUserModelId: APP_ID,
+      description: 'Clipador KTY em modo de desenvolvimento'
+    })
+    if (!ok) logger.warn('app', 'Não deu para criar o atalho do Menu Iniciar (ícone da barra de tarefas).')
+  } catch (e) {
+    logger.warn('app', `Atalho do Menu Iniciar: ${(e as Error).message}`)
+  }
+}
+
 function createWindow(forceShow = false): void {
   win = new BrowserWindow({
     width: 1360,
@@ -718,8 +748,8 @@ function createWindow(forceShow = false): void {
     show: false,
     backgroundColor: '#191523',
     title: 'Clipador KTY',
-    // Ícone da janela e da barra de tarefas (logo do Clipador)
-    icon: join(app.getAppPath(), 'resources', 'icon.png'),
+    // Ícone da janela e da barra de tarefas (logo do Clipador); no Windows o .ico tem todos os tamanhos
+    icon: join(app.getAppPath(), 'resources', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#1b1726', symbolColor: '#cfc8e6', height: 48 },
     webPreferences: {
@@ -728,6 +758,19 @@ function createWindow(forceShow = false): void {
       contextIsolation: true
     }
   })
+  // Barra de tarefas do Windows: sem isto, rodando em desenvolvimento ela mostra o ícone do electron.exe (o átomo)
+  if (process.platform === 'win32') {
+    const ico = join(app.getAppPath(), 'resources', 'icon.ico')
+    const bat = join(app.getAppPath(), '..', 'Abrir Clipador (desenvolvimento).bat')
+    win.setAppDetails({
+      appId: APP_ID,
+      appIconPath: ico,
+      appIconIndex: 0,
+      relaunchCommand: `"${process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe'}" /c "${bat}"`,
+      relaunchDisplayName: 'Clipador KTY'
+    })
+    ensureDevShortcut(ico, bat)
+  }
   win.once('ready-to-show', () => {
     if (forceShow || !startHidden) win?.show()
   })
@@ -750,7 +793,7 @@ function createWindow(forceShow = false): void {
 }
 
 // No Windows, os avisos só aparecem com um id de aplicativo definido
-app.setAppUserModelId('dev.clipador.kty')
+app.setAppUserModelId(APP_ID)
 
 app.whenReady().then(() => {
   // Outra cópia já está aberta: ela recebe o "second-instance" e mostra a janela

@@ -55,6 +55,9 @@ export interface AiVerdict {
   /** Começo e fim do corte escolhidos pela IA, em segundos dentro da janela de fala */
   clip_start?: number
   clip_end?: number
+  /** Segunda olhada com vídeo: o que ela viu na tela e se há spoiler da história do jogo */
+  visto?: string
+  spoiler?: boolean
 }
 
 export const REVIEW_SCHEMA = {
@@ -143,6 +146,55 @@ Campos:
 - clip_start e clip_end: em segundos da fala mostrada (a janela vai de 0 até o fim indicado), pelos passos 2 e 3.
 A transcrição é automática e pode ter erros; o chat pode estar em outro idioma.
 Devolva UM item para CADA momento recebido, com o mesmo id (mesmo os que você descartar, com keep=false). Responda só com o JSON pedido.`
+
+/**
+ * Segunda olhada, VENDO o vídeo do trecho (só para os lances mais fortes): a KaTY revê a análise que fez pela fala e pelo chat.
+ * Mesmo formato da análise normal, para um momento só, com o que ela viu e se há spoiler da história do jogo.
+ */
+export const VIDEO_REVIEW_SYSTEM = `${REVIEW_SYSTEM}
+
+AGORA VOCÊ VÊ O VÍDEO. Você recebeu o vídeo da janela do lance (com o som) e a análise que fez antes só pela fala e pelo chat.
+O vídeo começa no segundo 0 da janela, a mesma referência de clip_start e clip_end. Reveja tudo olhando a tela:
+- O que aconteceu de fato na tela (batida, fuga, morte, susto, bug, jogada, cena engraçada) e a reação do streamer na facecam (riso, grito, cara de choque).
+- Lance visual forte com pouca fala é bom clipe (keep=true); tela de menu, carregamento, mapa, propaganda ou nada acontecendo é keep=false.
+- Ajuste clip_start para quando a ação começa na tela e clip_end para logo depois da reação, pelo que você vê.
+- Título contando o que se vê ("BATEU O CARRO NA POLÍCIA E FUGIU A PÉ!"), fiel ao vídeo.
+- spoiler=true se o trecho mostra cena da história do jogo que estraga a surpresa (final, morte de personagem, reviravolta); nesse caso o título não conta a reviravolta.
+- visto: 1 frase com o que aparece na tela.
+Devolva o JSON de um momento (o mesmo id).`
+
+export const VIDEO_REVIEW_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    ...(REVIEW_SCHEMA.properties.moments.items as { properties: Record<string, unknown> }).properties,
+    visto: { type: 'STRING' },
+    spoiler: { type: 'BOOLEAN' }
+  },
+  required: [...(REVIEW_SCHEMA.properties.moments.items as { required: string[] }).required, 'visto', 'spoiler'],
+  propertyOrdering: ['id', 'visto', 'analise', 'gancho', 'notas', 'clip_start', 'clip_end', 'spoiler', 'keep', 'score', 'category', 'title_pt', 'title_en', 'reason', 'hashtags']
+}
+
+/** Pedido da segunda olhada: o momento (como na análise normal) e o que a KaTY achou antes, só pelo texto. */
+export function buildVideoPrompt(ctx: { channel: string; liveTitle: string }, m: MomentForAi, before: AiVerdict): string {
+  return `${buildReviewPrompt(ctx, [m])}
+
+### O que você achou antes, só pela fala e pelo chat
+keep=${before.keep}, notas=${JSON.stringify(before.notas ?? {})}, clip ${before.clip_start ?? '?'}–${before.clip_end ?? '?'} s, título "${before.title_pt}".
+${before.analise ? `Análise: ${before.analise}` : ''}
+Agora veja o vídeo e devolva a análise final.`
+}
+
+/**
+ * Quais lances recebem a segunda olhada com vídeo: os que a KaTY manteve (ou que tiveram clipe da comunidade
+ * ou pedido de clipe) com nota de pelo menos 35, dos mais fortes para os mais fracos, até `max`.
+ */
+export function pickForVideo(vs: { id: number; keep: boolean; score: number; human?: boolean }[], max: number): number[] {
+  return vs
+    .filter((v) => (v.keep || v.human) && v.score >= 35)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(0, max))
+    .map((v) => v.id)
+}
 
 /**
  * Nota da IA a partir das partes (gancho 30, desfecho 30, emoção 20, compartilhável 20).

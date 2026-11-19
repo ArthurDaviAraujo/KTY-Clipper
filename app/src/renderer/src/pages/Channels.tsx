@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AlertTriangle, Check, ChevronDown, ChevronsUpDown, Link2, RefreshCw, Scissors, Sparkles, TriangleAlert } from 'lucide-react'
 import type { ChannelMatch, ChannelState, LiveRecord, LiveStatus, Modality, Platform } from '../../../shared/types'
 import { MODALITIES, modalityOf } from '../../../shared/modality'
+import { SPEECH_LANGS } from '../../../shared/lang'
 import { formatTimecode, parseTimecode, parseVodInput } from '../../../shared/vod'
 import type { ChannelsView, Go } from '../App'
 import type { AppState } from '../state'
@@ -62,6 +63,7 @@ export default function ChannelsPage({ state, go, view, setView }: { state: AppS
 
       {view === 'all' && <AddChannel />}
       {one && <ChannelModality c={oneGroup.find((c) => c.live) ?? one} group={oneGroup} />}
+      {one && <ChannelSpeechLang c={one} group={oneGroup} />}
       {view === 'library' && <ImportVod state={state} />}
 
       {view !== 'library' && (
@@ -362,6 +364,34 @@ function ChannelModality({ c, group }: { c: ChannelState; group: ChannelState[] 
             { value: 'auto', label: 'Automática' },
             ...(Object.keys(MODALITIES) as Modality[]).map((m) => ({ value: m, label: MODALITIES[m].label[0].toUpperCase() + MODALITIES[m].label.slice(1), hint: MODALITIES[m].hint }))
           ]}
+        />
+      </Card>
+    </Section>
+  )
+}
+
+/** Idioma da legenda do streamer: automático (aprende em cada live o que ele fala) ou fixo. */
+function ChannelSpeechLang({ c, group }: { c: ChannelState; group: ChannelState[] }) {
+  const learned = group.find((x) => x.learnedLang)?.learnedLang ?? null
+  const name = (l: string) => SPEECH_LANGS.find((x) => x.value === l)?.label.toLowerCase() ?? l
+  return (
+    <Section title="Idioma da legenda">
+      <Card className="flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">Em que idioma sai a legenda</p>
+          <p className="text-xs text-muted">
+            Automático: em cada live, o app ouve os primeiros minutos e usa o idioma que o streamer fala (as vozes do jogo não contam)
+            {learned ? `; até agora, ${name(learned)}` : ''}. Fixe um idioma se ele errar.
+          </p>
+        </div>
+        <Segmented<string>
+          value={c.speechLang ?? 'auto'}
+          onChange={(v) => {
+            // Mesmo streamer: vale para todas as plataformas dele
+            if (typeof window.api.setChannelSpeechLang !== 'function') return
+            for (const x of group) void window.api.setChannelSpeechLang(x.id, v === 'auto' ? null : v)
+          }}
+          options={[{ value: 'auto', label: 'Automático' }, ...SPEECH_LANGS]}
         />
       </Card>
     </Section>

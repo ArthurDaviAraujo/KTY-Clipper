@@ -508,6 +508,8 @@ export function ClipStudio({
                   ))}
                   {moment.ai?.reason && <li className="text-accent-2">• KaTY: {moment.ai.reason}</li>}
                   {moment.ai?.hook && <li className="text-accent-2">• Gancho: {moment.ai.hook}</li>}
+                  {moment.ai?.seen && <li className="text-accent-2">• Viu no vídeo: {moment.ai.seen}</li>}
+                  {moment.ai?.spoiler && <li className="text-warn">• Tem spoiler da história do jogo (o título não conta)</li>}
                 </ul>
                 {moment.ai?.parts && (
                   <p className="text-[11px] text-muted">

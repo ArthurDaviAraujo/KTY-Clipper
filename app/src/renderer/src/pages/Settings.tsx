@@ -452,7 +452,7 @@ function SpeechCard({ state }: { state: AppState }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm font-medium">Idioma da fala</p>
-          <p className="text-xs text-muted">Automático detecta em cada pedaço. Fixar ajuda quando o streamer mistura idiomas.</p>
+          <p className="text-xs text-muted">Automático: em cada live, usa o idioma que o streamer fala (as vozes do jogo não contam). Dá para fixar por canal, na tela do canal.</p>
         </div>
         <Segmented
           value={['auto', 'pt', 'en', 'es'].includes(s.speech.language) ? s.speech.language : 'auto'}
@@ -635,6 +635,19 @@ export default function SettingsPage({ state, tab }: { state: AppState; tab: Set
             <p className="text-xs text-muted">
               Aba "KaTY" e barra lateral. Usa o Gemini acima e a mesma cota grátis da revisão dos momentos. Ações que apagam ou param algo sempre pedem confirmação.
             </p>
+          </div>
+        </Card>
+        <Card className="flex flex-wrap items-center gap-4">
+          <Toggle label="A KaTY vê o vídeo" checked={s.ai.videoReview} onChange={(v) => void updateSettings({ ai: { videoReview: v } })} />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">A KaTY vê o vídeo dos lances mais fortes</p>
+            <p className="text-xs text-muted">
+              Depois de ler a fala e o chat, ela assiste ao trecho (leve, 360p, com som) e revê a decisão: vê lance que só aparece na tela, descarta menu e
+              carregamento, acerta o começo e o fim, evita spoiler. Só no Gemini; gasta mais da cota grátis, por isso vale só para os mais fortes.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <NumberInput value={s.ai.videoPerRun} unit="por rodada" onChange={(v) => void updateSettings({ ai: { videoPerRun: v } })} />
           </div>
         </Card>
       </Section>

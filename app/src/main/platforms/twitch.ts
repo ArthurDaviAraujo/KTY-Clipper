@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { langCode } from '../../shared/lang'
 import type { LiveInfo } from '../../shared/types'
 import { httpFetch } from './http'
 
@@ -21,6 +22,7 @@ interface GqlUser {
   displayName: string
   profileImageURL: string | null
   stream: { id: string; title: string | null; createdAt: string; viewersCount: number; type: string; game: { name: string } | null } | null
+  broadcastSettings?: { language?: string | null } | null
 }
 
 /** Consulta até 30 canais por chamada. Canal inexistente volta como null. */
@@ -31,7 +33,7 @@ export async function twitchStatus(logins: string[], signal?: AbortSignal): Prom
     const query = `query { ${batch
       .map(
         (l, j) =>
-          `u${j}: user(login: ${JSON.stringify(l)}) { login displayName profileImageURL(width: 70) stream { id title createdAt viewersCount type game { name } } }`
+          `u${j}: user(login: ${JSON.stringify(l)}) { login displayName profileImageURL(width: 70) broadcastSettings { language } stream { id title createdAt viewersCount type game { name } } }`
       )
       .join(' ')} }`
     const r = await httpFetch(GQL_URL, {
@@ -64,7 +66,9 @@ function toChannel(u: GqlUser): TwitchChannel {
           game: s.game?.name ?? null,
           viewers: s.viewersCount,
           startedAt: Date.parse(s.createdAt),
-          isRerun: s.type !== 'live'
+          isRerun: s.type !== 'live',
+          // "PT", "EN"… (idioma escolhido pelo streamer nas configurações da Twitch)
+          language: langCode(u.broadcastSettings?.language)
         }
       : null
   }

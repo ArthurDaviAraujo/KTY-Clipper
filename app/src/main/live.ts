@@ -29,6 +29,8 @@ interface ChannelRow {
   last_checked_at: number | null
   last_error: string | null
   modality: string | null
+  speech_lang: string | null
+  language: string | null
 }
 
 interface Recording extends RecordingInfo {
@@ -165,7 +167,9 @@ export class LiveService extends EventEmitter {
         : null,
       lastCheckedAt: r.last_checked_at,
       lastError: r.last_error,
-      modality: (MODALITY_IDS as string[]).includes(r.modality ?? '') ? (r.modality as Modality) : null
+      modality: (MODALITY_IDS as string[]).includes(r.modality ?? '') ? (r.modality as Modality) : null,
+      speechLang: r.speech_lang && /^[a-z]{2}$/.test(r.speech_lang) ? r.speech_lang : null,
+      learnedLang: r.language && /^[a-z]{2}$/.test(r.language) ? r.language : null
     }
   }
 
@@ -279,6 +283,15 @@ export class LiveService extends EventEmitter {
     this.db.prepare('UPDATE channels SET modality = ? WHERE id = ?').run(m, id)
     const r = this.db.prepare('SELECT display_name, login FROM channels WHERE id = ?').get(id) as { display_name: string | null; login: string } | undefined
     if (r) this.log.info('canais', `${r.display_name ?? r.login}: modalidade ${m ? MODALITIES[m].label : 'automática (pela categoria)'}.`)
+    this.emitSoon()
+  }
+
+  /** Idioma da legenda do canal escolhido à mão ("pt", "en"…; null = automático, aprende em cada live). */
+  setSpeechLang(id: number, lang: string | null): void {
+    const l = lang && /^[a-z]{2}$/.test(lang) ? lang : null
+    this.db.prepare('UPDATE channels SET speech_lang = ? WHERE id = ?').run(l, id)
+    const r = this.db.prepare('SELECT display_name, login FROM channels WHERE id = ?').get(id) as { display_name: string | null; login: string } | undefined
+    if (r) this.log.info('canais', `${r.display_name ?? r.login}: legenda ${l ? `em ${l}` : 'no idioma que ele falar (automático)'}.`)
     this.emitSoon()
   }
 
@@ -455,8 +468,8 @@ export class LiveService extends EventEmitter {
     } else {
       liveId = (
         this.db
-          .prepare(`INSERT INTO lives(channel_id, title, started_at, status, platform_stream_id, game) VALUES (?, ?, ?, 'recording', ?, ?) RETURNING id`)
-          .get(r.id, live.title, live.startedAt, live.streamId, live.game) as { id: number }
+          .prepare(`INSERT INTO lives(channel_id, title, started_at, status, platform_stream_id, game, platform_lang) VALUES (?, ?, ?, 'recording', ?, ?, ?) RETURNING id`)
+          .get(r.id, live.title, live.startedAt, live.streamId, live.game, live.language ?? null) as { id: number }
       ).id
       dir = join(this.recordingsDir(), `${r.platform}_${r.login}`, `${stamp(live.startedAt)}_${liveId}`)
       this.db.prepare('UPDATE lives SET dir = ? WHERE id = ?').run(dir, liveId)

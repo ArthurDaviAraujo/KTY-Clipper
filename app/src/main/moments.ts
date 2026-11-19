@@ -8,13 +8,28 @@ import type { JobContext, JobQueue } from './jobs'
 import type { Logger } from './logs'
 import { analyzeAudio } from './audio'
 import { findVoiceTriggers, transcribe, type SpeechTools } from './speech'
+import { decideStreamerLang, speechLangFor } from '../shared/lang'
 import { BUCKET_S, classifyMessage, detectMoments, hypeSeries, type Bucket, type ClipSignal } from './detector'
 import { clipBelongs, clipWindow, kickClips, twitchClipPeriod, twitchClips } from './platforms/clips'
-import { QuotaError } from './ai/gemini'
+import { geminiVisionJson, QuotaError } from './ai/gemini'
+import { windowVideo } from './ai/video'
 import { aiJson, type Backup } from './ai/backups'
 import { channelModality, gameAt, modalityAt, modalityTimeline } from './games'
 import { modalityPreset } from '../shared/settings'
-import { buildReviewPrompt, combineScore, REVIEW_SCHEMA, REVIEW_SYSTEM, rubricScore, speechWithTimes, type AiVerdict, type MomentForAi } from './ai/review'
+import {
+  buildReviewPrompt,
+  buildVideoPrompt,
+  combineScore,
+  pickForVideo,
+  REVIEW_SCHEMA,
+  REVIEW_SYSTEM,
+  rubricScore,
+  speechWithTimes,
+  VIDEO_REVIEW_SCHEMA,
+  VIDEO_REVIEW_SYSTEM,
+  type AiVerdict,
+  type MomentForAi
+} from './ai/review'
 import type { MomentRecord, Settings, TimelinePoint } from '../shared/types'
 
 interface SegRow {
@@ -24,6 +39,7 @@ interface SegRow {
   duration_s: number | null
   audio_done: number
   speech_done: number
+  language: string | null
 }
 
 export interface MomentsDeps {
@@ -128,7 +144,7 @@ export class MomentsService extends EventEmitter {
     if (!live) return null
     const s = this.d.settings()
     const segs = this.db
-      .prepare(`SELECT id, path, start_utc, duration_s, audio_done, speech_done FROM segments WHERE live_id = ? AND status != 'deleted' ORDER BY seq`)
+      .prepare(`SELECT id, path, start_utc, duration_s, audio_done, speech_done, language FROM segments WHERE live_id = ? AND status != 'deleted' ORDER BY seq`)
       .all(liveId) as unknown as SegRow[]
     if (!segs.length) return { moments: 0 }
 
@@ -152,11 +168,49 @@ export class MomentsService extends EventEmitter {
     const speech = needSpeech ? this.d.speech() : null
     if (needSpeech && !speech && !this.noSpeechWarned) this.d.log.warn('fala', 'Whisper ou modelo não encontrado: momentos sem transcrição (veja Ajustes > Fala).')
     this.noSpeechWarned = needSpeech && !speech
+    // A legenda sai no idioma que o STREAMER fala, não no das vozes do jogo. Decidido em CADA live (ele pode mudar de idioma):
+    // escolhido à mão no canal > fixado nas Configurações > já decidido nesta live > aprendendo nos primeiros pedaços.
+    // Para aprender mais rápido, a dica é o idioma que a plataforma informa ou o das lives anteriores do canal.
+    const info = this.db
+      .prepare(
+        `SELECT l.channel_id, l.speech_lang, l.platform_lang, c.speech_lang AS choice, c.language AS learned
+         FROM lives l JOIN channels c ON c.id = l.channel_id WHERE l.id = ?`
+      )
+      .get(liveId) as { channel_id: number; speech_lang: string | null; platform_lang: string | null; choice: string | null; learned: string | null }
+    let lang = speechLangFor({ channelChoice: info.choice, global: s.speech.language, live: info.speech_lang })
+    const hint = info.platform_lang ?? info.learned
+    // Pedaços desta live ouvidos em outro idioma (vozes do jogo, ou antes de a pessoa escolher o idioma): refaz
+    const redoOthers = (target: string) => {
+      const redo = segs.filter((x) => x.speech_done && x.language && x.language !== target)
+      for (const x of redo) {
+        x.speech_done = 0
+        this.db.prepare('UPDATE segments SET speech_done = 0 WHERE id = ?').run(x.id)
+      }
+      if (redo.length) this.d.log.info('fala', `${live.channel} fala ${target}: refazendo ${redo.length} pedaço(s) que saíram em outro idioma.`)
+    }
+    const decide = (dom: string) => {
+      lang = dom
+      this.db.prepare('UPDATE lives SET speech_lang = ? WHERE id = ?').run(dom, liveId)
+      this.db.prepare('UPDATE channels SET language = ? WHERE id = ?').run(dom, info.channel_id)
+      redoOthers(dom)
+    }
+    if (lang === 'auto') {
+      const dom = decideStreamerLang(segs.filter((x) => x.speech_done).map((x) => x.language), hint)
+      if (dom) decide(dom)
+    } else redoOthers(lang)
+    const heard = segs.filter((x) => x.speech_done).map((x) => x.language)
     const pendingSpeech = speech ? segs.filter((x) => !x.speech_done && existsSync(x.path)) : []
     for (let i = 0; i < pendingSpeech.length; i++) {
       if (ctx.signal.aborted) throw ctx.signal.reason
       const seg = pendingSpeech[i]
-      const tr = await transcribe(speech!, seg.path, s.speech.language, this.threads(), ctx.signal)
+      const learning = lang === 'auto'
+      const tr = await transcribe(speech!, seg.path, lang, this.threads(), ctx.signal)
+      // Ainda aprendendo nesta live: assim que um idioma domina, os próximos pedaços já usam ele
+      if (learning) {
+        heard.push(tr.language)
+        const dom = decideStreamerLang(heard, hint)
+        if (dom) decide(dom)
+      }
       const end = seg.start_utc + (seg.duration_s ?? 0) * 1000
       this.db.exec('BEGIN')
       this.db.prepare('DELETE FROM speech_words WHERE live_id = ? AND t_ms >= ? AND t_ms < ?').run(liveId, seg.start_utc, end)
@@ -279,6 +333,26 @@ export class MomentsService extends EventEmitter {
     let done = 0
     const retried = new Set<number>()
     const BATCH = 8
+    // Para a segunda olhada com vídeo: o que a KaTY decidiu pela fala, por momento
+    const decided: { row: (typeof rows)[number]; item: MomentForAi; v: AiVerdict; human: boolean }[] = []
+    /** Guarda a análise de um momento (nota pelas partes, corte em hora real, nota final) */
+    const save = (row: (typeof rows)[number], raw: AiVerdict, used: string, extra: Record<string, unknown> = {}): AiVerdict => {
+      // A nota da IA é a soma das partes (gancho, desfecho, emoção, compartilhável), quando ela mandou
+      const v = { ...raw, id: row.id, score: rubricScore(raw) }
+      const sig = JSON.parse(row.signals)
+      // Começo e fim do corte em hora real (valem só se fazem sentido e contêm o pico)
+      const win = this.window(row)
+      const a = Number(v.clip_start)
+      const b = Number(v.clip_end)
+      const cut =
+        Number.isFinite(a) && Number.isFinite(b) && b - a >= 8 && win.from + a * 1000 <= row.peak_utc && win.from + b * 1000 >= row.peak_utc
+          ? { clip_from_utc: Math.round(win.from + Math.max(0, a) * 1000), clip_to_utc: Math.round(win.from + b * 1000) }
+          : {}
+      this.db
+        .prepare('UPDATE moments SET ai = ?, title = ?, score = ? WHERE id = ?')
+        .run(JSON.stringify({ ...v, ...cut, model: used, ...extra }), v.title_pt, combineScore(sig.detectorScore ?? 50, v, !!(sig.clip || sig.voice)), row.id)
+      return v
+    }
     for (let b = 0; b < rows.length; b += BATCH) {
       if (ctx.signal.aborted) break
       const batch = rows.slice(b, b + BATCH)
@@ -317,22 +391,12 @@ export class MomentsService extends EventEmitter {
           }
         )
         for (const raw of res.moments ?? []) {
-          // A nota da IA é a soma das partes (gancho, desfecho, emoção, compartilhável), quando ela mandou
-          const v = { ...raw, score: rubricScore(raw) }
-          const row = batch.find((r) => r.id === v.id)
+          const row = batch.find((r) => r.id === raw.id)
           if (!row) continue
+          const v = save(row, raw, used)
           const sig = JSON.parse(row.signals)
-          // Começo e fim do corte em hora real (valem só se fazem sentido e contêm o pico)
-          const win = this.window(row)
-          const a = Number(v.clip_start)
-          const b = Number(v.clip_end)
-          const cut =
-            Number.isFinite(a) && Number.isFinite(b) && b - a >= 8 && win.from + a * 1000 <= row.peak_utc && win.from + b * 1000 >= row.peak_utc
-              ? { clip_from_utc: Math.round(win.from + Math.max(0, a) * 1000), clip_to_utc: Math.round(win.from + b * 1000) }
-              : {}
-          this.db
-            .prepare('UPDATE moments SET ai = ?, title = ?, score = ? WHERE id = ?')
-            .run(JSON.stringify({ ...v, ...cut, model: used }), v.title_pt, combineScore(sig.detectorScore ?? 50, v, !!(sig.clip || sig.voice)), v.id)
+          const item = items.find((x) => x.id === row.id)!
+          decided.push({ row, item, v, human: !!(sig.clip || sig.voice) })
           done++
         }
         // A IA às vezes devolve só parte do lote (visto em 2026-11-18: 5 de 12): os que faltaram voltam uma vez no fim
@@ -358,9 +422,63 @@ export class MomentsService extends EventEmitter {
         this.d.log.warn('ia', `Revisão da IA falhou: ${(e as Error).message}`)
         break
       }
-      ctx.progress(0.85 + ((b + batch.length) / rows.length) * 0.15)
+      ctx.progress(0.85 + ((b + batch.length) / rows.length) * 0.1)
       // Nível grátis tem limite por minuto: um pedido a cada ~5 s
       if (b + BATCH < rows.length) await sleep(5000)
+    }
+
+    // Segunda olhada, VENDO o vídeo: só os lances mais fortes (vídeo gasta bem mais cota) e só no Gemini (as reservas não veem vídeo)
+    const ffmpeg = this.d.ffmpeg()
+    if (g && ffmpeg && s.ai.videoReview && decided.length && !ctx.signal.aborted && this.quotaWarnedDay !== today) {
+      const ids = pickForVideo(
+        decided.map((d) => ({ id: d.row.id, keep: d.v.keep, score: d.v.score, human: d.human })),
+        s.ai.videoPerRun
+      )
+      const segs = (
+        this.db.prepare(`SELECT path, start_utc, duration_s FROM segments WHERE live_id = ? AND status != 'deleted' AND duration_s > 0 ORDER BY start_utc`).all(live.id) as {
+          path: string
+          start_utc: number
+          duration_s: number
+        }[]
+      )
+        .filter((x) => existsSync(x.path))
+        .map((x) => ({ path: x.path, startUtc: x.start_utc, durS: x.duration_s }))
+      let seen = 0
+      for (const id of ids) {
+        if (ctx.signal.aborted) break
+        const d = decided.find((x) => x.row.id === id)!
+        const win = this.window(d.row)
+        try {
+          const video = await windowVideo(ffmpeg, segs, win.from, win.to, ctx.signal)
+          if (!video) continue
+          const raw = await geminiVisionJson<AiVerdict>(
+            g.key,
+            g.model,
+            VIDEO_REVIEW_SYSTEM,
+            buildVideoPrompt({ channel: live.channel, liveTitle: live.title ?? '' }, d.item, d.v),
+            [{ mimeType: 'video/mp4', data: video }],
+            VIDEO_REVIEW_SCHEMA,
+            ctx.signal,
+            { lowRes: true, temperature: 0.3 }
+          )
+          const v = save(d.row, raw, g.model, { video: true, before: { keep: d.v.keep, score: d.v.score, title: d.v.title_pt } })
+          seen++
+          if (v.keep !== d.v.keep || Math.abs(v.score - d.v.score) >= 10)
+            this.d.log.info('ia', `A KaTY viu o vídeo e mudou de ideia: "${d.v.title_pt}" (${d.v.score}, ${d.v.keep ? 'mantido' : 'fora'}) → "${v.title_pt}" (${v.score}, ${v.keep ? 'mantido' : 'fora'}).`)
+        } catch (e) {
+          if (e instanceof QuotaError) {
+            this.d.log.warn('ia', 'Cota do Gemini no limite: a KaTY parou de ver vídeos nesta rodada (a análise pela fala continua valendo).')
+            break
+          }
+          this.d.log.warn('ia', `A KaTY não conseguiu ver o vídeo de um lance: ${(e as Error).message.slice(0, 160)}`)
+        }
+        ctx.progress(0.95 + (seen / Math.max(1, ids.length)) * 0.05)
+        await sleep(4000)
+      }
+      if (seen) {
+        this.d.log.info('ia', `A KaTY viu o vídeo de ${seen} lance(s).`)
+        this.emit('moments', live.id)
+      }
     }
     return done
   }
@@ -511,7 +629,9 @@ export class MomentsService extends EventEmitter {
               model: ai.model ?? null,
               hook: ai.gancho ?? null,
               analysis: ai.analise ?? null,
-              parts: ai.notas ?? null
+              parts: ai.notas ?? null,
+              seen: ai.visto ?? null,
+              spoiler: !!ai.spoiler
             }
           : null,
         hasThumb: !!m.thumb_path && existsSync(m.thumb_path),
